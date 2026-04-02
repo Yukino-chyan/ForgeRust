@@ -2,37 +2,76 @@
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
-const greetMsg = ref("");
-const name = ref("");
+const tags = ["操作系统", "计算机网络", "Java后端"];
+const currentQuestion = ref<any>(null);
+const userAnswer = ref("");
+const aiResult = ref(null);
+const isLoading = ref(false);
 
-async function greet() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  greetMsg.value = await invoke("greet", { name: name.value });
+async function fetchQuestion(tag: string) {
+  aiResult.value = null; 
+  userAnswer.value = ""; 
+  currentQuestion.value = await invoke("get_mock_question", { tag });
 }
+
+async function startEvaluation() {
+    isLoading.value = true;
+  try {
+    aiResult.value = await invoke("mock_evaluate_answer", { 
+      answer: userAnswer.value 
+    });
+  } catch (error) {
+    console.error("调用失败:", error);
+  } finally {
+    isLoading.value = false;
+  }
+}
+
 </script>
 
 <template>
   <main class="container">
-    <h1>Welcome to Tauri + Vue</h1>
+    <h1>ForgeRust 面试演练</h1>
 
-    <div class="row">
-      <a href="https://vite.dev" target="_blank">
-        <img src="/vite.svg" class="logo vite" alt="Vite logo" />
-      </a>
-      <a href="https://tauri.app" target="_blank">
-        <img src="/tauri.svg" class="logo tauri" alt="Tauri logo" />
-      </a>
-      <a href="https://vuejs.org/" target="_blank">
-        <img src="./assets/vue.svg" class="logo vue" alt="Vue logo" />
-      </a>
-    </div>
-    <p>Click on the Tauri, Vite, and Vue logos to learn more.</p>
+    <section class="tag-section">
+      <span>选择考点：</span>
+      <button 
+        v-for="tag in tags" 
+        :key="tag" 
+        @click="fetchQuestion(tag)"
+        class="tag-btn"
+      >
+        {{ tag }}
+      </button>
+    </section>
 
-    <form class="row" @submit.prevent="greet">
-      <input id="greet-input" v-model="name" placeholder="Enter a name..." />
-      <button type="submit">Greet</button>
-    </form>
-    <p>{{ greetMsg }}</p>
+    <section v-if="currentQuestion" class="question-box">
+      <h3>🎙️ 面试官提问：</h3>
+      <p class="question-text">{{ currentQuestion.content }}</p>
+      <span class="meta">
+        标签：{{ currentQuestion.tags }} | 难度：{{ currentQuestion.difficulty }}
+      </span>
+    </section>
+
+    <section v-if="currentQuestion">
+      <textarea 
+        v-model="userAnswer" 
+        placeholder="请在这里输入你的回答..."
+        :disabled="isLoading"
+      ></textarea>
+      <br />
+      <button @click="startEvaluation" :disabled="isLoading || !userAnswer">
+        {{ isLoading ? "面试官思考中 (2s)..." : "提交回答" }}
+      </button>
+    </section>
+
+    <section v-if="aiResult" class="result-box">
+      <hr />
+      <h3>📈 面试评价</h3>
+      <p><strong>得分：</strong> <span class="score">{{ aiResult.score }}</span></p>
+      <p><strong>评语：</strong> {{ aiResult.comment }}</p>
+      <p><strong>后续建议：</strong> {{ aiResult.next_topic_suggestion }}</p>
+    </section>
   </main>
 </template>
 

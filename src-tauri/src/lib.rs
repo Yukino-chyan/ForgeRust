@@ -1,47 +1,35 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod models;
+mod db;
 
 use crate::models::{Question, MockAiResponse};
 use tokio::time::{sleep, Duration};
+use tauri::Manager;
+use sqlx::SqlitePool;
 
+// 出题函数
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+async fn get_mock_question(
+    tag: String, 
+    pool: tauri::State<'_, SqlitePool>
+) -> Result<Question, String> {
+    let query_tag = format!("%{}%", tag);
+    let question = sqlx::query_as::<_, Question>(
+        "SELECT * FROM questions WHERE tags LIKE ? ORDER BY RANDOM() LIMIT 1"
+    )
+    .bind(query_tag)
+    .fetch_optional(&*pool)
+    .await
+    .map_err(|e| format!("数据库查询失败: {}", e))?;
 
-// 这是一个模拟的出题函数
-#[tauri::command]
-fn get_mock_question(tag: String) -> Question {
-    // 模拟从数据库筛选逻辑
-    match tag.as_str() {
-        "操作系统" => Question {
-            id: 1,
-            content: "请简述进程与线程的区别，以及 Rust 是如何通过所有权机制保证线程安全的？".into(),
-            tags: "操作系统,并发".into(),
-            difficulty: 3,
-        },
-        "计算机网络" => Question {
-            id: 2,
-            content: "请详细描述 TCP 三次握手的过程，并解释为什么要进行第三次握手？".into(),
-            tags: "网络".into(),
-            difficulty: 2,
-        },
-        "Java后端" => Question {
-            id: 3,
-            content: "谈谈 JVM 的垃圾回收机制中，G1 收集器与 CMS 收集器的主要区别是什么？".into(),
-            tags: "Java,JVM".into(),
-            difficulty: 4,
-        },
-        _ => Question {
-            id: 0,
-            content: "准备好了吗？点击下方标签选择一个面试方向开始。".into(),
-            tags: "通用".into(),
-            difficulty: 1,
-        },
+    // 处理查不到题目的情况
+    match question {
+        Some(q) => Ok(q),
+        None => Err(format!("题库中暂时没有关于 [{}] 的题目，请换个标签试试。", tag)),
     }
 }
 
-// 模拟面试官打分和点评的逻辑
+// 面试官打分和点评的逻辑
 #[tauri::command]
 async fn mock_evaluate_answer(answer: String) -> Result<MockAiResponse, String> {
     println!("接收到用户回答: {}", answer);
@@ -57,8 +45,20 @@ async fn mock_evaluate_answer(answer: String) -> Result<MockAiResponse, String> 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match db::init_db().await {
+                    Ok(pool) => {
+                        handle.manage(pool); 
+                        println!("🎉 数据库连接池已成功挂载到全局状态！");
+                    }
+                    Err(e) => eprintln!("❌ 数据库初始化失败: {}", e),
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            greet, 
             mock_evaluate_answer,
             get_mock_question
         ])

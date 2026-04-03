@@ -1,11 +1,22 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+interface AiResponse {
+  score: number;
+  comment: string;
+  next_topic_suggestion: string;
+}
 
+interface Question {
+  id: number;
+  content: string;
+  tags: string;
+  difficulty: number;
+}
 const tags = ["操作系统", "计算机网络", "Java后端"];
-const currentQuestion = ref<any>(null);
+const currentQuestion = ref<Question | null>(null);
 const userAnswer = ref("");
-const aiResult = ref(null);
+const aiResult = ref<AiResponse | null>(null);
 const isLoading = ref(false);
 
 async function fetchQuestion(tag: string) {

@@ -28,3 +28,4 @@ tokio = { version = "1.36", features = ["full"] }
 sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "sqlite", "chrono"] }
 
 chrono = { version = "0.4", features = ["serde"] }
+tauri-plugin-dialog = "2"

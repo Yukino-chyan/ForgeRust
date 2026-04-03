@@ -6,7 +6,7 @@ use sqlx::FromRow;
 pub struct Question {
     pub id: i32,
     pub content: String,
-    pub tags: String, 
+    pub tags: String,
     pub difficulty: i32,
 }
 

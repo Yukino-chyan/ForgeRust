@@ -6,8 +6,7 @@ use std::str::FromStr;
 
 // 初始化数据库，返回一个连接池
 pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
-    let options = SqliteConnectOptions::from_str("sqlite://forgerust.db")?
-        .create_if_missing(true);
+    let options = SqliteConnectOptions::from_str("sqlite://forgerust.db")?.create_if_missing(true);
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -20,7 +19,7 @@ pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
             content TEXT NOT NULL,
             tags TEXT NOT NULL,
             difficulty INTEGER NOT NULL
-        );"
+        );",
     )
     .execute(&pool)
     .await?;
@@ -34,7 +33,7 @@ pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
             "INSERT INTO questions (content, tags, difficulty) VALUES
             ('请简述进程与线程的区别，以及 Rust 是如何保证线程安全的？', '操作系统', 3),
             ('请解释 TCP 三次握手的过程。', '计算机网络', 2),
-            ('谈谈 JVM 的垃圾回收机制中，G1 收集器与 CMS 收集器的主要区别？', 'Java后端', 4);"
+            ('谈谈 JVM 的垃圾回收机制中，G1 收集器与 CMS 收集器的主要区别？', 'Java后端', 4);",
         )
         .execute(&pool)
         .await?;

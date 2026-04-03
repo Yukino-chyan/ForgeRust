@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+
 interface AiResponse {
   score: number;
   comment: string;
@@ -38,12 +40,43 @@ async function startEvaluation() {
   }
 }
 
+async function handleImport() {
+  try {
+    // 唤起操作系统的文件选择框
+    const selectedPath = await open({
+      multiple: false,
+      filters: [{
+        name: '题库文件',
+        extensions: ['txt', 'json', 'csv']
+      }]
+    });
+
+    if (!selectedPath) {
+      console.log("用户取消了文件选择");
+      return; 
+    }
+    // 发送给 Rust 后端去处理
+    console.log("选中的文件路径：", selectedPath);
+    const resultMsg = await invoke("import_questions_from_file", {
+      filePath: typeof selectedPath === 'string' ? selectedPath : (selectedPath as any).path
+    });
+
+    alert(`🎉 ${resultMsg}\n\n(现在你可以多点几次标签抽题，看看能不能抽到刚才导入的题了)`);
+
+  } catch (error) {
+    console.error("文件导入失败:", error);
+    alert(`导入出错: ${error}`);
+  }
+}
+
 </script>
 
 <template>
   <main class="container">
-    <h1>ForgeRust 面试演练</h1>
-
+    <div class="header">
+      <h1>ForgeRust 面试演练</h1>
+      <button class="import-btn" @click="handleImport">📁 导入题库</button>
+    </div>
     <section class="tag-section">
       <span>选择考点：</span>
       <button 

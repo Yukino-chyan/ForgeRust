@@ -33,6 +33,32 @@ async fn get_mock_question(
     }
 }
 
+// 开展面试，根据用户选的标签生成一套试卷（多题版）
+#[tauri::command]
+async fn generate_interview(
+    tags: Vec<String>,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<Question>, String> {
+    let mut interview_questions: Vec<Question> = Vec::new();
+
+    // 遍历用户选中的每一个标签，去数据库里各抽 2 道题（可自行调整数量）
+    for tag in tags {
+        let query_tag = format!("%{}%", tag);
+        let mut questions = sqlx::query_as::<_, Question>(
+            "SELECT * FROM questions WHERE tags LIKE ? ORDER BY RANDOM() LIMIT 2"
+        )
+        .bind(query_tag)
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| format!("数据库查询失败: {}", e))?;
+        interview_questions.append(&mut questions);
+    }
+    if interview_questions.is_empty() {
+        return Err("选中的考点下暂时没有题目，请重新选择或导入题库。".into());
+    }
+    Ok(interview_questions)
+}
+
 // 面试官打分和点评的逻辑
 #[tauri::command]
 async fn mock_evaluate_answer(answer: String) -> Result<MockAiResponse, String> {
@@ -92,7 +118,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             mock_evaluate_answer,
             get_mock_question,
-            import_questions_from_file
+            import_questions_from_file,
+            generate_interview
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

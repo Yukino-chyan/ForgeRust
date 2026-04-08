@@ -1,9 +1,15 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed , onMounted} from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
 // --- 接口定义 ---
-interface AiResponse { score: number; comment: string; next_topic_suggestion: string; }
+interface AiResponse {  
+  standard_answer: string  
+  explanation: string  
+  is_correct: boolean | null  // 选择题有值，简答题为 null  
+  ai_comment: string  
+  score: number  
+}  
 interface Question { 
   id: number; 
   question_type: string; 
@@ -14,7 +20,14 @@ interface Question {
   standard_answer: string;
 }
 // --- 状态变量 ---
-const tags = ["操作系统", "计算机网络", "Java后端"];
+const tags = ref<string[]>([]);
+onMounted(async () => {
+  try {
+    tags.value = await invoke("get_all_tags");
+  } catch (e) {
+    console.error("加载标签失败", e);
+  }
+});
 const appState = ref<'setup' | 'interview'>('setup'); 
 const selectedTags = ref<string[]>([]); 
 const questionList = ref<Question[]>([]); 
@@ -55,7 +68,7 @@ async function startEvaluation() {
   if (!userAnswer.value) return alert("请先给出你的答案！");
   isLoading.value = true;
   try {
-    aiResult.value = await invoke("mock_evaluate_answer", { 
+    aiResult.value = await invoke("evaluate_answer", { 
       questionId: currentQuestion.value.id, 
       userAnswer: userAnswer.value
     });
@@ -133,14 +146,43 @@ function nextQuestion() {
           {{ isLoading ? "批阅中..." : "提交回答" }}
         </button>
       </section>
-
-      <section v-if="aiResult" class="result-box">
-        <hr />
-        <h3>📈 评价反馈</h3>
-        <p><strong>得分：</strong> <span class="score">{{ aiResult.score }}</span></p>
-        <p><strong>评语：</strong> {{ aiResult.comment }}</p>
-        <button class="next-btn" @click="nextQuestion">👉 下一题</button>
-      </section>
+  
+      <!-- ✅ 新的 -->  
+      <section v-if="aiResult" class="result-box">  
+        <hr />  
+        <h3>📈 评价反馈</h3>  
+        
+        <!-- 得分 -->  
+        <p>  
+          <strong>得分：</strong>   
+          <span class="score">{{ aiResult.score }}</span>  
+        </p>  
+        
+        <!-- 选择题：对错标识 -->  
+        <p v-if="aiResult.is_correct !== null">  
+          <strong>结果：</strong>  
+          <span :class="aiResult.is_correct ? 'correct' : 'wrong'">  
+            {{ aiResult.is_correct ? '✅ 回答正确' : '❌ 回答错误' }}  
+          </span>  
+        </p>  
+        
+        <!-- AI 点评 -->  
+        <p><strong>点评：</strong> {{ aiResult.ai_comment }}</p>  
+        
+        <!-- 标准答案 -->  
+        <div class="answer-box">  
+          <strong>📌 标准答案：</strong>  
+          <p>{{ aiResult.standard_answer }}</p>  
+        </div>  
+        
+        <!-- 题目解析 -->  
+        <div class="explanation-box">  
+          <strong>📖 解析：</strong>  
+          <p>{{ aiResult.explanation }}</p>  
+        </div>  
+        
+        <button class="next-btn" @click="nextQuestion">👉 下一题</button>  
+      </section>  
     </div>
   </div>
 </template>
@@ -165,4 +207,26 @@ textarea { width: 100%; height: 120px; padding: 12px; border-radius: 8px; border
 .result-box { background: #fafafa; padding: 20px; border-radius: 8px; margin-top: 20px; border: 1px solid #eee;}
 .score { color: #42b983; font-size: 1.3rem; font-weight: bold; }
 .next-btn { margin-top: 15px; background-color: #f0ad4e; color: white; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer;}
+/* 在 <style scoped> 里追加 */  
+.correct { color: #42b983; font-weight: bold; }  
+.wrong   { color: #e74c3c; font-weight: bold; }  
+.answer-box {  
+  background: #f0f9f4;  
+  border-left: 4px solid #42b983;  
+  padding: 10px 15px;  
+  border-radius: 6px;  
+  margin: 10px 0;  
+}  
+.explanation-box {  
+  background: #f8f9ff;  
+  border-left: 4px solid #646cff;  
+  padding: 10px 15px;  
+  border-radius: 6px;  
+  margin: 10px 0;  
+}  
+.answer-box p, .explanation-box p {  
+  margin: 6px 0 0;  
+  line-height: 1.6;  
+  color: #2c3e50;  
+}  
 </style>

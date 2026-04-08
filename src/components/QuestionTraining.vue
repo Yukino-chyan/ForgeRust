@@ -4,8 +4,15 @@ import { invoke } from "@tauri-apps/api/core";
 
 // --- 接口定义 ---
 interface AiResponse { score: number; comment: string; next_topic_suggestion: string; }
-interface Question { id: number; content: string; tags: string; difficulty: number; }
-
+interface Question { 
+  id: number; 
+  question_type: string; 
+  content: string; 
+  options: string | null;
+  tags: string; 
+  difficulty: number; 
+  standard_answer: string;
+}
 // --- 状态变量 ---
 const tags = ["操作系统", "计算机网络", "Java后端"];
 const appState = ref<'setup' | 'interview'>('setup'); 
@@ -18,7 +25,14 @@ const aiResult = ref<AiResponse | null>(null);
 const isLoading = ref(false);
 
 const currentQuestion = computed(() => questionList.value[currentIndex.value]);
-
+const currentOptions = computed(() => {
+  if (!currentQuestion.value || !currentQuestion.value.options) return [];
+  try {
+    return JSON.parse(currentQuestion.value.options); // 把 JSON 字符串还原成数组
+  } catch (e) {
+    return [];
+  }
+});
 // --- 核心逻辑 ---
 function toggleTag(tag: string) {
   const index = selectedTags.value.indexOf(tag);
@@ -38,11 +52,19 @@ async function startInterview() {
 }
 
 async function startEvaluation() {
+  if (!userAnswer.value) return alert("请先给出你的答案！");
   isLoading.value = true;
   try {
-    aiResult.value = await invoke("mock_evaluate_answer", { answer: userAnswer.value });
-  } catch (error) { console.error("调用失败:", error); } 
-  finally { isLoading.value = false; }
+    aiResult.value = await invoke("mock_evaluate_answer", { 
+      questionId: currentQuestion.value.id, 
+      userAnswer: userAnswer.value
+    });
+  } catch (error) { 
+    alert(`系统内部调用报错: ${error}`); 
+    console.error("调用失败:", error); 
+  } finally { 
+    isLoading.value = false; 
+  }
 }
 
 function nextQuestion() {
@@ -83,11 +105,32 @@ function nextQuestion() {
         <span class="meta">标签：{{ currentQuestion?.tags }} | 难度：{{ currentQuestion?.difficulty }}</span>
       </section>
 
-      <section>
-        <textarea v-model="userAnswer" placeholder="请在这里输入你的回答..." :disabled="isLoading"></textarea>
+      <section class="answer-section">
+        
+        <div v-if="currentQuestion?.question_type === 'SINGLE'" class="options-container">
+          <label v-for="opt in currentOptions" :key="opt" class="option-label">
+            <input 
+              type="radio" 
+              name="single_choice"
+              :value="opt.charAt(0)" 
+              v-model="userAnswer" 
+              :disabled="isLoading"
+            >
+            {{ opt }}
+          </label>
+        </div>
+
+        <div v-else-if="currentQuestion?.question_type === 'ESSAY'">
+          <textarea 
+            v-model="userAnswer" 
+            placeholder="请详细阐述你的回答..." 
+            :disabled="isLoading"
+          ></textarea>
+        </div>
+
         <br />
         <button class="submit-btn" @click="startEvaluation" :disabled="isLoading || !userAnswer">
-          {{ isLoading ? "系统批阅中 (2s)..." : "提交回答" }}
+          {{ isLoading ? "批阅中..." : "提交回答" }}
         </button>
       </section>
 
@@ -104,6 +147,9 @@ function nextQuestion() {
 
 <style scoped>
 /* 组件内部专属样式 */
+.options-container { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px;}
+.option-label { display: flex; align-items: center; gap: 10px; padding: 10px; background: #fff; border: 1px solid #ddd; border-radius: 6px; cursor: pointer; transition: 0.2s;}
+.option-label:hover { border-color: #42b983; background: #f0f9f4;}
 .training-container { padding: 20px; text-align: left; }
 .desc { color: #666; margin-bottom: 20px; }
 .tag-section { margin-bottom: 30px; }

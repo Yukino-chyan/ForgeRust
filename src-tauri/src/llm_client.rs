@@ -3,7 +3,7 @@ use serde_json::{json, Value};
   
 const API_URL: &str = "https://zenmux.ai/api/v1/chat/completions";  
 const API_KEY: &str = "sk-ai-v1-81ca59e8dcadd9d2038477201bac2f1363a325ca1086b653314d93d410c3d8a9";  
-  
+
 // ================================  
 // 内部通用请求函数（避免重复代码）  
 // ================================  
@@ -51,45 +51,37 @@ async fn call_api(system_prompt: &str, user_prompt: &str) -> Result<String, Stri
 // 适用于：所有题型（导入时没有 standard_answer 或 explanation 的题目）  
 // 返回：(standard_answer, explanation)  
 // ================================  
-pub async fn generate_answer_and_explanation(  
-    question_type: &str,  
-    content: &str,  
-    options: Option<&str>, // 选择题传入格式化后的选项字符串  
-) -> Result<(String, String), String> {  
-      
-    let options_text = options  
-        .map(|o| format!("\n选项：{}", o))  
-        .unwrap_or_default();  
-  
-    let system_prompt = concat!(  
-        "你是一个专业的IT技术面试题库维护者。",  
-        "请为给定的题目生成标准答案和详细解析。",  
-        "必须严格按照以下 JSON 格式输出，不要包含任何 Markdown 标记或多余文字：",  
-        r#"{"standard_answer": "答案内容", "explanation": "详细解析内容"}"#  
-    ); 
-  
-    let user_prompt = format!(  
-        "题目类型：{}\n题目内容：{}{}\n\n请生成标准答案和解析：",  
-        question_type, content, options_text  
-    );  
-  
-    let raw = call_api(system_prompt, &user_prompt).await?;  
-  
-    // 解析 AI 返回的 JSON  
-    let parsed: Value = serde_json::from_str(&raw)  
-        .map_err(|e| format!("AI 返回内容不是合法 JSON: {}，原始内容: {}", e, raw))?;  
-  
-    let standard_answer = parsed["standard_answer"]  
-        .as_str()  
-        .unwrap_or("暂无标准答案")  
-        .to_string();  
-  
-    let explanation = parsed["explanation"]  
-        .as_str()  
-        .unwrap_or("暂无解析")  
-        .to_string();  
-  
-    Ok((standard_answer, explanation))  
+// 返回值从 (String, String) 变成 (String, String, String) -> (答案, 解析, 标签)
+pub async fn generate_answer_and_explanation(
+    question_type: &str,
+    content: &str,
+    options: Option<&str>,
+) -> Result<(String, String, String), String> { // 👈 注意这里
+    
+    let allowed_tags = vec!["Java", "Rust", "操作系统", "计算机网络", "数据库", "数据结构", "其他"];
+    let tags_context = allowed_tags.join(", ");
+
+    let system_prompt = format!(
+        "你是一个专业的IT技术面试题库维护者。请为题目生成标准答案、详细解析和最匹配的考点标签。\n\
+        【标签约束】：你必须从以下预设标签中选择最合适的一个：[{}]。\n\
+        严格按照 JSON 格式输出：\n\
+        {{\"standard_answer\": \"...\", \"explanation\": \"...\", \"tag\": \"...\"}}",
+        tags_context
+    );
+
+    let user_prompt = format!("类型：{}\n内容：{}{}\n请生成：", question_type, content, options.unwrap_or(""));
+
+    // 👈 修复报错的地方
+    let raw = call_api(&system_prompt, &user_prompt).await?; 
+
+    let parsed: Value = serde_json::from_str(raw.trim().trim_matches('`').trim_start_matches("json"))
+        .map_err(|e| format!("JSON解析失败: {}", e))?;
+
+    let ans = parsed["standard_answer"].as_str().unwrap_or("").to_string();
+    let exp = parsed["explanation"].as_str().unwrap_or("").to_string();
+    let tag = parsed["tag"].as_str().unwrap_or("其他").to_string(); // 👈 提取 AI 打的标签
+
+    Ok((ans, exp, tag))
 }  
   
 // ================================  

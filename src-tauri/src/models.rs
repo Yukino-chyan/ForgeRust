@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};  
 use sqlx::FromRow;  
   
-// 1. 数据库题目模型（新增 explanation 字段）  
+// 1. 数据库题目模型 
 #[derive(Debug, Serialize, Deserialize, FromRow, Clone)]  
 pub struct Question {  
     pub id: i32,  
@@ -14,7 +14,7 @@ pub struct Question {
     pub explanation: String, // AI生成的题目解析，导入时预生成  
 }  
   
-// 2. 导入文件中单道题的格式（用于反序列化 JSON 文件）  
+// 2. 导入文件中单道题的格式
 #[derive(Debug, Deserialize)]  
 pub struct ImportQuestion {  
     pub question_type: String,  
@@ -29,7 +29,7 @@ pub struct ImportQuestion {
     pub explanation: Option<String>,  
 }  
   
-// 3. 答题评分返回结构（替换原来的 MockAiResponse）  
+// 3. 答题评分返回结构  
 #[derive(Debug, Serialize, Deserialize)]  
 pub struct EvaluateResponse {  
     pub standard_answer: String, // 从 DB 直接取，始终有值  
@@ -39,10 +39,18 @@ pub struct EvaluateResponse {
     pub score: i32,              // 0-100  
 }  
   
-// 4. 导入结果通知（返回给前端的进度报告）  
+// 4. 导入结果通知
 #[derive(Debug, Serialize, Deserialize)]  
 pub struct ImportResult {  
     pub total: usize,        // 共导入题目数  
     pub ai_generated: usize, // AI 补全了几题的答案/解析  
     pub message: String,  
 }  
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportProgress {
+    pub current: usize,
+    pub total: usize,
+    pub message: String,
+    pub is_finished: bool,
+}

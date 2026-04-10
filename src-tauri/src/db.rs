@@ -18,7 +18,7 @@ pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
         "CREATE TABLE IF NOT EXISTS questions (  
             id              INTEGER PRIMARY KEY AUTOINCREMENT,  
             question_type   TEXT    NOT NULL,  
-            content         TEXT    NOT NULL,  
+            content         TEXT    NOT NULL UNIQUE,  
             options         TEXT,  
             tags            TEXT    NOT NULL,  
             difficulty      INTEGER NOT NULL,  
@@ -53,7 +53,7 @@ pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
                 ('SINGLE',   
                  '在 Rust 中，哪个关键字用于声明不可变变量？',   
                  '[\"A. let\", \"B. mut\", \"C. static\", \"D. const\"]',   
-                 'Rust基础',   
+                 'Rust',   
                  1,   
                  'A',   
                  'Rust 中用 let 声明变量，默认不可变。要声明可变变量需要 let mut。注意区分：let 是运行时绑定，const 是编译期常量，static 是静态变量有固定内存地址。'  

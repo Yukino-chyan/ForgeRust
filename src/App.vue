@@ -2,29 +2,43 @@
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 
 // 引入刚刚写好的组件
 import QuestionTraining from "./components/QuestionTraining.vue";
 
 // 全局路由状态：控制右侧显示什么内容
 const currentView = ref<'training' | 'mock_interview'>('training');
+const isImporting = ref(false);
+const progress = ref({ current: 0, total: 0, message: "" });
 
 // 全局工具：导入题库保留在最顶层
 async function handleImport() {
+  const selected = await open({
+    multiple: false,
+    filters: [{ name: 'JSON题库', extensions: ['json'] }]
+  });
+  
+  if (!selected) return;
+  const path = typeof selected === 'string' ? selected : (selected as any).path;
+
+  // 1. 开始监听后端进度事件
+  const unlisten = await listen("import-status", (event: any) => {
+    const data = event.payload;
+    progress.value = data;
+    isImporting.value = !data.is_finished;
+    if (data.is_finished) {
+       unlisten(); // 任务结束后取消监听
+    }
+  });
+
+  // 2. 调用后端命令
   try {
-    const selectedPath = await open({
-      multiple: false,
-      filters: [{ name: '题库文件', extensions: ['txt', 'json', 'csv'] }]
-    });
-    if (!selectedPath) return; 
-    
-    const resultMsg = await invoke("import_questions_from_file", {
-      filePath: typeof selectedPath === 'string' ? selectedPath : (selectedPath as any).path
-    });
-    alert(`🎉 ${resultMsg}`);
-  } catch (error) {
-    console.error("文件导入失败:", error);
-    alert(`导入出错: ${error}`);
+    isImporting.value = true;
+    await invoke("import_questions_from_file", { filePath: path });
+  } catch (e) {
+    alert(e);
+    isImporting.value = false;
   }
 }
 </script>

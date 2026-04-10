@@ -2,9 +2,11 @@ mod db;
 mod models;  
 mod llm_client;  
   
-use crate::models::{EvaluateResponse, ImportQuestion, ImportResult, Question};  
+use crate::models::{EvaluateResponse, ImportQuestion, ImportResult, Question, ImportProgress}; // 👈 加上 ImportProgress
 use sqlx::SqlitePool;  
-use tauri::Manager;  
+use tauri::Manager;
+use tauri::{AppHandle, Emitter};
+use serde::Serialize;
    
 // 命令1：按标签随机抽一题（题库训练用）   
 #[tauri::command]  
@@ -118,122 +120,107 @@ async fn evaluate_answer(
 }  
    
 // 命令4：导入题库（真实解析 + AI 后台补全）   
-#[tauri::command]  
-async fn import_questions_from_file(  
-    file_path: String,  
-    pool: tauri::State<'_, SqlitePool>,  
-) -> Result<ImportResult, String> {  
-  
-    // 1. 读取并解析 JSON 文件  
-    let content = std::fs::read_to_string(&file_path)  
-        .map_err(|e| format!("读取文件失败: {}", e))?;  
-  
-    let import_list: Vec<ImportQuestion> = serde_json::from_str(&content)  
-        .map_err(|e| format!(  
-            "JSON 解析失败，请检查文件格式是否正确: {}", e  
-        ))?;  
-  
-    let total = import_list.len();  
-    if total == 0 {  
-        return Err("文件中没有找到任何题目，请检查文件内容。".into());  
-    }  
-  
-    let mut ai_generated_count = 0usize;  
-    // clone pool 出来，让后台任务能独立持有  
-    let pool_clone = (*pool).clone();  
-  
-    // 2. 启动后台任务处理（不阻塞前端）  
-    tokio::spawn(async move {  
-        println!("🚀 后台导入任务启动，共 {} 道题目...", total);  
-  
-        for item in import_list {  
-            // 把 options Vec 转成 JSON 字符串（入库格式）  
-            let options_str: Option<String> = item.options.as_ref().map(|opts| {  
-                serde_json::to_string(opts).unwrap_or_default()  
-            });  
-  
-            // 检查是否需要 AI 补全  
-            let needs_ai = item.standard_answer  
-                .as_deref()  
-                .map(|s| s.trim().is_empty())  
-                .unwrap_or(true)  
-                || item.explanation  
-                    .as_deref()  
-                    .map(|s| s.trim().is_empty())  
-                    .unwrap_or(true);  
-  
-            let (final_answer, final_explanation) = if needs_ai {  
-                println!("🤖 AI 补全中：{}", &item.content);  
-  
-                // 格式化选项用于 Prompt  
-                let options_for_prompt = item.options.as_ref().map(|opts| opts.join(", "));  
-  
-                match llm_client::generate_answer_and_explanation(  
-                    &item.question_type,  
-                    &item.content,  
-                    options_for_prompt.as_deref(),  
-                )  
-                .await  
-                {  
-                    Ok((answer, explanation)) => {  
-                        ai_generated_count += 1;  
-                        (answer, explanation)  
-                    }  
-                    Err(e) => {  
-                        // AI 补全失败：记录日志，用空值占位，不中断整个导入  
-                        eprintln!("⚠️ AI 补全失败（{}）: {}", &item.content, e);  
-                        (  
-                            item.standard_answer.unwrap_or_default(),  
-                            item.explanation.unwrap_or_default(),  
-                        )  
-                    }  
-                }  
-            } else {  
-                // 不需要AI补全，直接用文件里的数据  
-                (  
-                    item.standard_answer.unwrap_or_default(),  
-                    item.explanation.unwrap_or_default(),  
-                )  
-            };  
-  
-            // 插入数据库  
-            let insert_result = sqlx::query(  
-                "INSERT INTO questions   
-                    (question_type, content, options, tags, difficulty, standard_answer, explanation)  
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",  
-            )  
-            .bind(&item.question_type)  
-            .bind(&item.content)  
-            .bind(&options_str)  
-            .bind(&item.tags)  
-            .bind(item.difficulty)  
-            .bind(&final_answer)  
-            .bind(&final_explanation)  
-            .execute(&pool_clone)  
-            .await;  
-  
-            match insert_result {  
-                Ok(_)  => println!("✅ 入库成功：{}", &item.content),  
-                Err(e) => eprintln!("❌ 入库失败：{}，原因：{}", &item.content, e),  
-            }  
-        }  
-  
-        println!(  
-            "🎉 导入任务完成！共 {} 题，AI 补全了 {} 题的答案和解析。",  
-            total, ai_generated_count  
-        );  
-    });  
-  
-    // 3. 立即返回给前端（后台继续跑）  
-    Ok(ImportResult {  
-        total,  
-        ai_generated: 0, // 后台异步，此时还不知道最终数量  
-        message: format!(  
-            "已接收 {} 道题目，正在后台解析入库中，AI 将自动补全缺失的答案和解析，请稍候...",  
-            total  
-        ),  
-    })  
-}  
+#[tauri::command]
+async fn import_questions_from_file(
+    file_path: String,
+    pool: tauri::State<'_, SqlitePool>,
+    app: tauri::AppHandle,
+) -> Result<ImportResult, String> { // 保持返回 ImportResult 结构
+    let content = tokio::fs::read_to_string(&file_path)
+        .await
+        .map_err(|e| format!("文件读取失败: {}", e))?;
+
+    let import_list: Vec<ImportQuestion> = serde_json::from_str(&content)
+        .map_err(|e| format!("JSON 格式不正确: {}", e))?;
+
+    let total = import_list.len();
+    if total == 0 { return Err("文件内无题目".into()); }
+    
+    let pool_clone = (*pool).clone();
+
+    tokio::spawn(async move {
+        let mut ai_count = 0;
+        
+        for (i, item) in import_list.into_iter().enumerate() {
+            let current_idx = i + 1;
+            
+            // 1. 发送进度
+            let _ = app.emit("import-status", ImportProgress {
+                current: current_idx,
+                total,
+                message: format!("正在处理: {:.10}...", item.content),
+                is_finished: false,
+            });
+
+            // 2. 判定是否需要 AI (答案为空、解析为空 或 标签为空)
+            let needs_ai = item.standard_answer.as_deref().unwrap_or("").trim().is_empty() 
+                        || item.explanation.as_deref().unwrap_or("").trim().is_empty()
+                        || item.tags.trim().is_empty();
+
+            let (ans, exp, tag) = if needs_ai {
+                let options_text = item.options.as_ref().map(|o| o.join(", "));
+                match llm_client::generate_answer_and_explanation(
+                    &item.question_type, 
+                    &item.content, 
+                    options_text.as_deref()
+                ).await {
+                    Ok((a, e, t)) => {
+                        ai_count += 1;
+                        // 如果原文件有标签则用原文件的，否则用 AI 归一化后的标签
+                        let final_tag = if item.tags.trim().is_empty() { t } else { item.tags.clone() };
+                        (a, e, final_tag)
+                    },
+                    Err(e) => {
+                        eprintln!("⚠️ 第 {} 题 AI 补全失败: {}", current_idx, e);
+                        (item.standard_answer.unwrap_or_default(), item.explanation.unwrap_or_default(), item.tags.clone())
+                    }
+                }
+            } else {
+                (item.standard_answer.unwrap_or_default(), item.explanation.unwrap_or_default(), item.tags.clone())
+            };
+
+            // 3. 写入数据库 (UPSERT 逻辑：内容重复则更新答案、解析和标签)
+            let options_json = item.options.map(|o| serde_json::to_string(&o).unwrap_or_default());
+            
+            let res = sqlx::query(
+                "INSERT INTO questions 
+                    (question_type, content, options, tags, difficulty, standard_answer, explanation) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(content) DO UPDATE SET 
+                    standard_answer = excluded.standard_answer,
+                    explanation = excluded.explanation,
+                    tags = excluded.tags"
+            )
+            .bind(&item.question_type)
+            .bind(&item.content)
+            .bind(&options_json)
+            .bind(&tag)
+            .bind(item.difficulty)
+            .bind(&ans)
+            .bind(&exp)
+            .execute(&pool_clone)
+            .await;
+
+            if let Err(e) = res {
+                eprintln!("❌ 第 {} 题入库失败: {}", current_idx, e);
+            }
+        }
+
+        // 4. 发送完成事件
+        let _ = app.emit("import-status", ImportProgress {
+            current: total,
+            total,
+        message: format!("🎉 导入完成！AI 补全/规范化分类了 {} 道题目。", ai_count),
+            is_finished: true,
+        });
+    });
+
+    Ok(ImportResult {
+        total,
+        ai_generated: 0,
+        message: format!("已启动后台导入，共 {} 题，正在进行 AI 语义分类...", total),
+    })
+}
   
 // 命令5：获取所有可用标签（动态从数据库读取）  
 #[tauri::command]  

@@ -3,22 +3,28 @@ import { ref, computed , onMounted} from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
 // --- 接口定义 ---
-interface AiResponse {  
-  standard_answer: string  
-  explanation: string  
-  is_correct: boolean | null  // 选择题有值，简答题为 null  
-  ai_comment: string  
-  score: number  
-}  
-interface Question { 
-  id: number; 
-  question_type: string; 
-  content: string; 
+interface AiResponse {
+  standard_answer: string
+  explanation: string
+  is_correct: boolean | null  // 选择题有值，简答题为 null
+  ai_comment: string
+  score: number
+}
+interface Question {
+  id: number;
+  question_type: string;
+  content: string;
   options: string | null;
-  tags: string; 
-  difficulty: number; 
+  tags: string;
+  difficulty: number;
   standard_answer: string;
 }
+interface TrainingResult {
+  question: Question;
+  userAnswer: string;
+  evaluation: AiResponse;
+}
+
 // --- 状态变量 ---
 const tags = ref<string[]>([]);
 onMounted(async () => {
@@ -28,28 +34,47 @@ onMounted(async () => {
     console.error("加载标签失败", e);
   }
 });
-const appState = ref<'setup' | 'interview'>('setup'); 
-const selectedTags = ref<string[]>([]); 
-const questionList = ref<Question[]>([]); 
-const currentIndex = ref(0); 
+const appState = ref<'setup' | 'interview' | 'summary'>('setup');
+const selectedTags = ref<string[]>([]);
+const questionList = ref<Question[]>([]);
+const currentIndex = ref(0);
 
 const userAnswer = ref("");
 const aiResult = ref<AiResponse | null>(null);
 const isLoading = ref(false);
+const trainingResults = ref<TrainingResult[]>([]);
 
 const currentQuestion = computed(() => questionList.value[currentIndex.value]);
 const currentOptions = computed(() => {
   if (!currentQuestion.value || !currentQuestion.value.options) return [];
   try {
-    return JSON.parse(currentQuestion.value.options); // 把 JSON 字符串还原成数组
+    return JSON.parse(currentQuestion.value.options);
   } catch (e) {
     return [];
   }
 });
+
+// --- 总结页统计数据 ---
+const totalCount = computed(() => trainingResults.value.length);
+const correctCount = computed(() =>
+  trainingResults.value.filter(r => {
+    if (r.evaluation.is_correct !== null) return r.evaluation.is_correct;
+    return r.evaluation.score >= 60;
+  }).length
+);
+const averageScore = computed(() => {
+  if (totalCount.value === 0) return 0;
+  const sum = trainingResults.value.reduce((acc, r) => acc + r.evaluation.score, 0);
+  return Math.round(sum / totalCount.value);
+});
+const accuracyRate = computed(() =>
+  totalCount.value === 0 ? 0 : Math.round((correctCount.value / totalCount.value) * 100)
+);
+
 // --- 核心逻辑 ---
 function toggleTag(tag: string) {
   const index = selectedTags.value.indexOf(tag);
-  if (index > -1) { selectedTags.value.splice(index, 1); } 
+  if (index > -1) { selectedTags.value.splice(index, 1); }
   else { selectedTags.value.push(tag); }
 }
 
@@ -57,10 +82,11 @@ async function startInterview() {
   if (selectedTags.value.length === 0) return alert("请至少选择一个考点！");
   try {
     questionList.value = await invoke("generate_interview", { tags: selectedTags.value });
-    currentIndex.value = 0; 
-    userAnswer.value = ""; 
+    currentIndex.value = 0;
+    userAnswer.value = "";
     aiResult.value = null;
-    appState.value = 'interview'; 
+    trainingResults.value = [];
+    appState.value = 'interview';
   } catch (error) { alert(error); }
 }
 
@@ -68,47 +94,73 @@ async function startEvaluation() {
   if (!userAnswer.value) return alert("请先给出你的答案！");
   isLoading.value = true;
   try {
-    aiResult.value = await invoke("evaluate_answer", { 
-      questionId: currentQuestion.value.id, 
+    const result: AiResponse = await invoke("evaluate_answer", {
+      questionId: currentQuestion.value.id,
       userAnswer: userAnswer.value
     });
-  } catch (error) { 
-    alert(`系统内部调用报错: ${error}`); 
-    console.error("调用失败:", error); 
-  } finally { 
-    isLoading.value = false; 
+    aiResult.value = result;
+    // 记录本题结果
+    trainingResults.value.push({
+      question: currentQuestion.value,
+      userAnswer: userAnswer.value,
+      evaluation: result,
+    });
+  } catch (error) {
+    alert(`系统内部调用报错: ${error}`);
+    console.error("调用失败:", error);
+  } finally {
+    isLoading.value = false;
   }
 }
 
 function nextQuestion() {
   if (currentIndex.value < questionList.value.length - 1) {
     currentIndex.value++;
-    userAnswer.value = ""; 
-    aiResult.value = null; 
+    userAnswer.value = "";
+    aiResult.value = null;
   } else {
-    alert("🎉 训练结束！你已经完成了所有题目。");
-    appState.value = 'setup'; 
-    selectedTags.value = [];  
+    appState.value = 'summary';
   }
+}
+
+function restartTraining() {
+  appState.value = 'setup';
+  selectedTags.value = [];
+  trainingResults.value = [];
 }
 </script>
 
 <template>
   <div class="training-container">
     <div v-if="appState === 'setup'" class="setup-room">
-      <h2>🎯 题库专项训练</h2>
-      <p class="desc">针对特定知识点进行结构化刷题，夯实基础。</p>
-      
-      <section class="tag-section">
-        <button 
-          v-for="tag in tags" :key="tag" @click="toggleTag(tag)"
-          :class="['tag-btn', { 'selected': selectedTags.includes(tag) }]"
-        >
-          {{ tag }}
+      <div class="setup-content">
+        <div class="setup-title-group">
+          <h1 class="setup-title">题库专项训练</h1>
+          <p class="setup-subtitle">选择你要复习的考点，系统将为你生成专项练习题</p>
+        </div>
+
+        <div class="setup-panel">
+          <div class="panel-header">
+            <span class="panel-label">选择考点</span>
+            <span class="selected-hint" v-if="selectedTags.length > 0">
+              已选 {{ selectedTags.length }} 个
+            </span>
+          </div>
+          <div class="tag-grid">
+            <button
+              v-for="tag in tags" :key="tag" @click="toggleTag(tag)"
+              :class="['tag-btn', { 'selected': selectedTags.includes(tag) }]"
+            >
+              {{ tag }}
+            </button>
+          </div>
+        </div>
+
+        <button class="start-btn" @click="startInterview" :disabled="selectedTags.length === 0">
+          开始训练
+          <span v-if="selectedTags.length > 0" class="start-hint">· 约 {{ selectedTags.length * 2 }} 道题</span>
         </button>
-      </section>
-      
-      <button class="start-btn" @click="startInterview">🚀 开始训练</button>
+      </div>
     </div>
 
     <div v-else-if="appState === 'interview'" class="interview-room">
@@ -181,23 +233,179 @@ function nextQuestion() {
           <p>{{ aiResult.explanation }}</p>  
         </div>  
         
-        <button class="next-btn" @click="nextQuestion">👉 下一题</button>  
-      </section>  
+        <button class="next-btn" @click="nextQuestion">👉 下一题</button>
+      </section>
+    </div>
+
+    <!-- ===== 总结页 ===== -->
+    <div v-else-if="appState === 'summary'" class="summary-room">
+      <div class="summary-header">
+        <h2>训练完成</h2>
+        <p class="summary-subtitle">本次共 {{ totalCount }} 道题，以下是你的表现</p>
+      </div>
+
+      <!-- 三个统计卡片 -->
+      <div class="stat-cards">
+        <div class="stat-card">
+          <span class="stat-value" :class="accuracyRate >= 60 ? 'good' : 'bad'">{{ accuracyRate }}%</span>
+          <span class="stat-label">正确率</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value">{{ correctCount }} / {{ totalCount }}</span>
+          <span class="stat-label">答对题数</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value" :class="averageScore >= 60 ? 'good' : 'bad'">{{ averageScore }}</span>
+          <span class="stat-label">平均分</span>
+        </div>
+      </div>
+
+      <!-- 逐题明细 -->
+      <div class="result-list">
+        <div
+          v-for="(r, idx) in trainingResults"
+          :key="idx"
+          class="result-item"
+          :class="{
+            'result-correct': r.evaluation.is_correct === true || (r.evaluation.is_correct === null && r.evaluation.score >= 60),
+            'result-wrong': r.evaluation.is_correct === false || (r.evaluation.is_correct === null && r.evaluation.score < 60)
+          }"
+        >
+          <!-- 左侧：序号 + 状态图标 -->
+          <div class="result-index">
+            <span class="idx-num">{{ idx + 1 }}</span>
+            <span class="idx-icon">
+              {{ r.evaluation.is_correct === true || (r.evaluation.is_correct === null && r.evaluation.score >= 60) ? '✅' : '❌' }}
+            </span>
+          </div>
+
+          <!-- 中间：题目内容 + 答题详情 -->
+          <div class="result-body">
+            <p class="result-question">{{ r.question.content }}</p>
+            <div class="result-meta">
+              <span class="result-tag">{{ r.question.tags }}</span>
+              <span class="result-type">{{ r.question.question_type }}</span>
+            </div>
+            <div class="result-answers">
+              <span class="your-answer">你的答案：{{ r.userAnswer }}</span>
+              <span v-if="r.evaluation.is_correct === false" class="std-answer">
+                正确答案：{{ r.evaluation.standard_answer }}
+              </span>
+            </div>
+            <p class="result-comment">{{ r.evaluation.ai_comment }}</p>
+          </div>
+
+          <!-- 右侧：分数 -->
+          <div class="result-score">
+            <span :class="r.evaluation.score >= 60 ? 'score-good' : 'score-bad'">
+              {{ r.evaluation.score }}
+            </span>
+            <span class="score-unit">分</span>
+          </div>
+        </div>
+      </div>
+
+      <button class="restart-btn" @click="restartTraining">再来一套！</button>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* 组件内部专属样式 */
-.options-container { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px;}
-.option-label { display: flex; align-items: center; gap: 10px; padding: 10px; background: #fff; border: 1px solid #ddd; border-radius: 6px; cursor: pointer; transition: 0.2s;}
-.option-label:hover { border-color: #42b983; background: #f0f9f4;}
-.training-container { padding: 20px; text-align: left; }
-.desc { color: #666; margin-bottom: 20px; }
-.tag-section { margin-bottom: 30px; }
-.tag-btn { margin: 0 8px 8px 0; padding: 8px 16px; cursor: pointer; border-radius: 6px; border: 1px solid #ccc; background: #fff; transition: all 0.2s;}
-.tag-btn.selected { background-color: #42b983; color: white; border-color: #42b983; }
-.start-btn { font-size: 1.1rem; padding: 12px 24px; background-color: #646cff; color: white; border: none; border-radius: 8px; cursor: pointer;}
+/* ===== 容器基础 ===== */
+.training-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ===== Setup 页 ===== */
+.setup-room {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+}
+.setup-content {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+.setup-title-group {
+  text-align: center;
+}
+.setup-title {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #2c3e50;
+  margin: 0 0 8px;
+}
+.setup-subtitle {
+  color: #888;
+  margin: 0;
+  font-size: 0.95rem;
+}
+.setup-panel {
+  background: #f4f6f8;
+  border-radius: 14px;
+  padding: 24px;
+}
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.panel-label {
+  font-weight: 600;
+  color: #2c3e50;
+  font-size: 0.95rem;
+}
+.selected-hint {
+  font-size: 0.82rem;
+  color: #42b983;
+  font-weight: 600;
+}
+.tag-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.tag-btn {
+  padding: 9px 18px;
+  cursor: pointer;
+  border-radius: 8px;
+  border: 1.5px solid #dde1e7;
+  background: #fff;
+  color: #555;
+  font-size: 0.9rem;
+  transition: all 0.18s;
+  font-weight: 500;
+}
+.tag-btn:hover { border-color: #42b983; color: #42b983; background: #f0f9f4; }
+.tag-btn.selected { background-color: #42b983; color: #fff; border-color: #42b983; }
+
+.start-btn {
+  width: 100%;
+  font-size: 1.05rem;
+  font-weight: 600;
+  padding: 15px 24px;
+  background-color: #646cff;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.start-btn:hover:not(:disabled) { background-color: #535bf2; }
+.start-btn:disabled { background: #c5c7d4; cursor: not-allowed; }
+.start-hint { font-size: 0.85rem; opacity: 0.85; font-weight: 400; }
 .question-box { background: #f4f6f8; padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #42b983;}
 .question-text { font-size: 1.1rem; font-weight: bold; color: #2c3e50; margin: 10px 0;}
 .meta { font-size: 0.85em; color: #888; }
@@ -224,9 +432,159 @@ textarea { width: 100%; height: 120px; padding: 12px; border-radius: 8px; border
   border-radius: 6px;  
   margin: 10px 0;  
 }  
-.answer-box p, .explanation-box p {  
-  margin: 6px 0 0;  
-  line-height: 1.6;  
-  color: #2c3e50;  
-}  
+.answer-box p, .explanation-box p {
+  margin: 6px 0 0;
+  line-height: 1.6;
+  color: #2c3e50;
+}
+
+/* ===== 总结页样式 ===== */
+.summary-room {
+  padding: 30px 24px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+.summary-header {
+  text-align: center;
+  margin-bottom: 28px;
+}
+.summary-header h2 {
+  font-size: 1.8rem;
+  color: #2c3e50;
+  margin: 0 0 6px;
+}
+.summary-subtitle {
+  color: #888;
+  margin: 0;
+}
+
+/* 统计卡片区 */
+.stat-cards {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 32px;
+}
+.stat-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 12px;
+  background: #f4f6f8;
+  border-radius: 12px;
+  gap: 6px;
+}
+.stat-value {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #2c3e50;
+}
+.stat-value.good { color: #42b983; }
+.stat-value.bad  { color: #e74c3c; }
+.stat-label {
+  font-size: 0.85rem;
+  color: #888;
+}
+
+/* 逐题明细列表 */
+.result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 32px;
+}
+.result-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid #eee;
+  background: #fff;
+  border-left-width: 4px;
+}
+.result-correct { border-left-color: #42b983; }
+.result-wrong   { border-left-color: #e74c3c; }
+
+.result-index {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 32px;
+}
+.idx-num {
+  font-size: 0.75rem;
+  color: #aaa;
+}
+.idx-icon {
+  font-size: 1.1rem;
+}
+
+.result-body {
+  flex: 1;
+  min-width: 0;
+}
+.result-question {
+  font-weight: 600;
+  color: #2c3e50;
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.result-meta {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.result-tag, .result-type {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #f0f2f5;
+  color: #666;
+}
+.result-answers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.85rem;
+  margin-bottom: 6px;
+}
+.your-answer { color: #555; }
+.std-answer  { color: #e74c3c; font-weight: 600; }
+.result-comment {
+  font-size: 0.85rem;
+  color: #777;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.result-score {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 48px;
+}
+.score-good { font-size: 1.5rem; font-weight: bold; color: #42b983; }
+.score-bad  { font-size: 1.5rem; font-weight: bold; color: #e74c3c; }
+.score-unit { font-size: 0.75rem; color: #aaa; }
+
+/* 重新选题按钮 */
+.restart-btn {
+  display: block;
+  width: 100%;
+  padding: 14px;
+  font-size: 1rem;
+  font-weight: 600;
+  background-color: #646cff;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.restart-btn:hover { background-color: #535bf2; }
 </style>

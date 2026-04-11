@@ -4,9 +4,7 @@ use serde_json::{json, Value};
 const API_URL: &str = "https://zenmux.ai/api/v1/chat/completions";  
 const API_KEY: &str = "sk-ai-v1-81ca59e8dcadd9d2038477201bac2f1363a325ca1086b653314d93d410c3d8a9";  
 
-// ================================  
-// 内部通用请求函数（避免重复代码）  
-// ================================  
+// 内部通用请求函数（避免重复代码）   
 async fn call_api(system_prompt: &str, user_prompt: &str) -> Result<String, String> {  
     let client = Client::new();  
   
@@ -46,11 +44,9 @@ async fn call_api(system_prompt: &str, user_prompt: &str) -> Result<String, Stri
     }  
 }  
   
-// ================================  
 // 函数1：导入时补全答案 + 生成解析  
 // 适用于：所有题型（导入时没有 standard_answer 或 explanation 的题目）  
 // 返回：(standard_answer, explanation)  
-// ================================  
 // 返回值从 (String, String) 变成 (String, String, String) -> (答案, 解析, 标签)
 pub async fn generate_answer_and_explanation(
     question_type: &str,
@@ -71,7 +67,6 @@ pub async fn generate_answer_and_explanation(
 
     let user_prompt = format!("类型：{}\n内容：{}{}\n请生成：", question_type, content, options.unwrap_or(""));
 
-    // 👈 修复报错的地方
     let raw = call_api(&system_prompt, &user_prompt).await?; 
 
     let parsed: Value = serde_json::from_str(raw.trim().trim_matches('`').trim_start_matches("json"))
@@ -84,18 +79,15 @@ pub async fn generate_answer_and_explanation(
     Ok((ans, exp, tag))
 }  
   
-// ================================  
 // 函数2：答题时对简答题进行实时 AI 点评  
 // 适用于：ESSAY 题型，用户提交答案后调用  
 // 返回：(score, ai_comment)  
-// ================================  
 pub async fn evaluate_essay_answer(  
     content: &str,  
     standard_answer: &str,  
     user_answer: &str,  
 ) -> Result<(i32, String), String> {  
       
-    // 修复：修改 Prompt 引导 AI 输出 score 和 comment
     let system_prompt = concat!(  
         "你是一个专业的IT技术面试官。",  
         "请根据标准答案对用户的回答进行评分（0-100）和点评。",  
@@ -112,11 +104,10 @@ pub async fn evaluate_essay_answer(
   
     let parsed: Value = serde_json::from_str(&raw)  
         .map_err(|e| format!("AI 返回内容不是合法 JSON: {}，原始内容: {}", e, raw))?;  
-  
-    // 现在字段对应上了
+
     let score = parsed["score"]  
         .as_i64()  
-        .unwrap_or(0) as i32;  // 默认给0，方便发现错误
+        .unwrap_or(0) as i32;
   
     let comment = parsed["comment"]  
         .as_str()

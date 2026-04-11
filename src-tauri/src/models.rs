@@ -22,7 +22,6 @@ pub struct ImportQuestion {
     pub options: Option<Vec<String>>, // 导入时是数组，入库前转成 JSON 字符串  
     pub tags: String,  
     pub difficulty: i32,  
-    // 这两个字段导入时可能为空，留给 AI 补全  
     #[serde(default)]  
     pub standard_answer: Option<String>,  
     #[serde(default)]  

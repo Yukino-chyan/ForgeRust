@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 
-// 引入刚刚写好的组件
 import QuestionTraining from "./components/QuestionTraining.vue";
 
 // 全局路由状态：控制右侧显示什么内容
@@ -74,7 +73,7 @@ async function handleImport() {
     </aside>
 
     <main class="main-content">
-      <div v-if="currentView === 'training'">
+      <div v-if="currentView === 'training'" class="view-wrapper">
         <QuestionTraining />
       </div>
 
@@ -133,11 +132,19 @@ body, html { margin: 0; padding: 0; height: 100%; font-family: Inter, sans-serif
 /* 右侧内容区样式 */
 .main-content {
   flex: 1;
+  min-height: 0;
   background-color: #fff;
   margin: 15px;
   border-radius: 12px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.05);
   overflow-y: auto;
+}
+
+/* 视图包装器：让子组件能撑满 main-content */
+.view-wrapper {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 /* 占位符样式 */

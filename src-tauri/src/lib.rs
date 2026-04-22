@@ -28,30 +28,33 @@ async fn get_random_question(
     }  
 }  
   
-// 按多个标签组卷（模拟面试用，暂时保留）  
-#[tauri::command]  
-async fn generate_interview(  
-    tags: Vec<String>,  
-    pool: tauri::State<'_, SqlitePool>,  
-) -> Result<Vec<Question>, String> {  
-    let mut result: Vec<Question> = Vec::new();  
-  
-    for tag in tags {  
-        let query_tag = format!("%{}%", tag);  
-        let mut questions = sqlx::query_as::<_, Question>(  
-            "SELECT * FROM questions WHERE tags LIKE ? ORDER BY RANDOM() LIMIT 2",  
-        )  
-        .bind(query_tag)  
-        .fetch_all(&*pool)  
-        .await  
-        .map_err(|e| format!("数据库查询失败: {}", e))?;  
-        result.append(&mut questions);  
-    }  
-  
-    if result.is_empty() {  
-        return Err("选中的考点下暂时没有题目，请重新选择或导入题库。".into());  
-    }  
-    Ok(result)  
+// 按多个标签组卷
+#[tauri::command]
+async fn generate_interview(
+    tags: Vec<String>,
+    count: u32,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<Question>, String> {
+    let per_tag = count.max(1) as i64;
+    let mut result: Vec<Question> = Vec::new();
+
+    for tag in tags {
+        let query_tag = format!("%{}%", tag);
+        let mut questions = sqlx::query_as::<_, Question>(
+            "SELECT * FROM questions WHERE tags LIKE ? ORDER BY RANDOM() LIMIT ?",
+        )
+        .bind(query_tag)
+        .bind(per_tag)
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| format!("数据库查询失败: {}", e))?;
+        result.append(&mut questions);
+    }
+
+    if result.is_empty() {
+        return Err("选中的考点下暂时没有题目，请重新选择或导入题库。".into());
+    }
+    Ok(result)
 }  
    
 // 评分

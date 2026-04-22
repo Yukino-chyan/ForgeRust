@@ -5,10 +5,9 @@ mod llm_client;
 use crate::models::{EvaluateResponse, ImportQuestion, ImportResult, Question, ImportProgress}; // 👈 加上 ImportProgress
 use sqlx::SqlitePool;  
 use tauri::Manager;
-use tauri::{AppHandle, Emitter};
-use serde::Serialize;
+use tauri::Emitter;
    
-// 命令1：按标签随机抽一题（题库训练用）   
+// 按标签随机抽一题
 #[tauri::command]  
 async fn get_random_question(  
     tag: String,  
@@ -29,7 +28,7 @@ async fn get_random_question(
     }  
 }  
   
-// 命令2：按多个标签组卷（模拟面试用，暂时保留）  
+// 按多个标签组卷（模拟面试用，暂时保留）  
 #[tauri::command]  
 async fn generate_interview(  
     tags: Vec<String>,  
@@ -55,7 +54,7 @@ async fn generate_interview(
     Ok(result)  
 }  
    
-// 命令3：评分（核心改造）  
+// 评分
 #[tauri::command]  
 async fn evaluate_answer(  
     question_id: i32,  
@@ -63,7 +62,7 @@ async fn evaluate_answer(
     pool: tauri::State<'_, SqlitePool>,  
 ) -> Result<EvaluateResponse, String> {  
   
-    // 1. 从数据库取出完整题目信息  
+    // 从数据库取出完整题目信息  
     let q = sqlx::query_as::<_, Question>(  
         "SELECT * FROM questions WHERE id = ?",  
     )  
@@ -72,34 +71,68 @@ async fn evaluate_answer(
     .await  
     .map_err(|e| format!("查询题目失败: {}", e))?;  
   
-    // 2. 策略路由  
+    // 策略路由  
     match q.question_type.as_str() {  
   
-        "SINGLE" | "MULTI" => {  
-            let is_correct = user_answer  
-                .trim()  
-                .eq_ignore_ascii_case(q.standard_answer.trim());  
-  
-            let ai_comment = if is_correct {  
-                "✅ 回答正确！".to_string()  
-            } else {  
-                format!(  
-                    "❌ 回答有误。你选择了【{}】，正确答案是【{}】。",  
-                    user_answer.trim(),  
-                    q.standard_answer.trim()  
-                )  
+        "SINGLE" => {
+            let is_correct = user_answer
+                .trim()
+                .eq_ignore_ascii_case(q.standard_answer.trim());
+
+            let ai_comment = if is_correct {
+                "✅ 回答正确！".to_string()
+            } else {
+                format!(
+                    "❌ 回答有误。你选择了【{}】，正确答案是【{}】。",
+                    user_answer.trim(),
+                    q.standard_answer.trim()
+                )
             };  
   
-            Ok(EvaluateResponse {  
-                standard_answer: q.standard_answer,  
-                explanation: q.explanation,  
-                is_correct: Some(is_correct),  
-                ai_comment,  
-                score: if is_correct { 100 } else { 0 },  
-            })  
-        }  
-  
-        // ── 简答题：调用 AI 实时点评 ─────────────────────────  
+            Ok(EvaluateResponse {
+                standard_answer: q.standard_answer,
+                explanation: q.explanation,
+                is_correct: Some(is_correct),
+                ai_comment,
+                score: if is_correct { 100 } else { 0 },
+            })
+        }
+
+        "MULTI" => {
+            // 将用户答案和标准答案都规范化为排序后的字母集合再比较
+            // 兼容 "A,B" 和 "AB" 两种格式
+            let normalize = |s: &str| -> Vec<char> {
+                let mut v: Vec<char> = s
+                    .split(|c: char| !c.is_ascii_alphabetic())
+                    .flat_map(|seg| seg.chars())
+                    .filter(|c| c.is_ascii_uppercase())
+                    .collect();
+                v.sort();
+                v.dedup();
+                v
+            };
+            let user_set = normalize(user_answer.trim());
+            let std_set  = normalize(q.standard_answer.trim());
+            let is_correct = user_set == std_set;
+
+            let ai_comment = if is_correct {
+                "✅ 回答正确！".to_string()
+            } else {
+                let user_str: String = user_set.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ");
+                let std_str:  String = std_set.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ");
+                format!("❌ 回答有误。你选择了【{}】，正确答案是【{}】。", user_str, std_str)
+            };
+
+            Ok(EvaluateResponse {
+                standard_answer: q.standard_answer,
+                explanation: q.explanation,
+                is_correct: Some(is_correct),
+                ai_comment,
+                score: if is_correct { 100 } else { 0 },
+            })
+        }
+
+        // ── 简答题：调用 AI 实时点评 ─────────────────────────
         "ESSAY" | _ => {  
             let (score, ai_comment) = llm_client::evaluate_essay_answer(  
                 &q.content,  
@@ -111,7 +144,7 @@ async fn evaluate_answer(
             Ok(EvaluateResponse {  
                 standard_answer: q.standard_answer,  
                 explanation: q.explanation,  
-                is_correct: None, // 简答题不判断对错，只给分  
+                is_correct: None,
                 ai_comment,  
                 score,  
             })  
@@ -119,25 +152,21 @@ async fn evaluate_answer(
     }  
 }  
    
-// 命令4：导入题库（真实解析 + AI 后台补全）   
+// 导入题库  
 #[tauri::command]
 async fn import_questions_from_file(
     file_path: String,
     pool: tauri::State<'_, SqlitePool>,
     app: tauri::AppHandle,
-) -> Result<ImportResult, String> { // 保持返回 ImportResult 结构
+) -> Result<ImportResult, String> {
     let content = tokio::fs::read_to_string(&file_path)
         .await
         .map_err(|e| format!("文件读取失败: {}", e))?;
-
     let import_list: Vec<ImportQuestion> = serde_json::from_str(&content)
         .map_err(|e| format!("JSON 格式不正确: {}", e))?;
-
     let total = import_list.len();
     if total == 0 { return Err("文件内无题目".into()); }
-    
     let pool_clone = (*pool).clone();
-
     tokio::spawn(async move {
         let mut ai_count = 0;
         
@@ -261,9 +290,9 @@ pub fn run() {
                 match db::init_db().await {  
                     Ok(pool) => {  
                         handle.manage(pool);  
-                        println!("🎉 数据库连接池挂载成功！");  
+                        println!("数据库连接池挂载成功！");  
                     }  
-                    Err(e) => eprintln!("❌ 数据库初始化失败: {}", e),  
+                    Err(e) => eprintln!("数据库初始化失败: {}", e),  
                 }  
             });  
             Ok(())  

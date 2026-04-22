@@ -40,9 +40,16 @@ const questionList = ref<Question[]>([]);
 const currentIndex = ref(0);
 
 const userAnswer = ref("");
+const multiAnswers = ref<string[]>([]);
 const aiResult = ref<AiResponse | null>(null);
 const isLoading = ref(false);
 const trainingResults = ref<TrainingResult[]>([]);
+
+const canSubmit = computed(() => {
+  if (!currentQuestion.value) return false;
+  if (currentQuestion.value.question_type === 'MULTI') return multiAnswers.value.length > 0;
+  return !!userAnswer.value;
+});
 
 const currentQuestion = computed(() => questionList.value[currentIndex.value]);
 const currentOptions = computed(() => {
@@ -84,6 +91,7 @@ async function startInterview() {
     questionList.value = await invoke("generate_interview", { tags: selectedTags.value });
     currentIndex.value = 0;
     userAnswer.value = "";
+    multiAnswers.value = [];
     aiResult.value = null;
     trainingResults.value = [];
     appState.value = 'interview';
@@ -91,6 +99,9 @@ async function startInterview() {
 }
 
 async function startEvaluation() {
+  if (currentQuestion.value?.question_type === 'MULTI') {
+    userAnswer.value = [...multiAnswers.value].sort().join(',');
+  }
   if (!userAnswer.value) return alert("请先给出你的答案！");
   isLoading.value = true;
   try {
@@ -117,6 +128,7 @@ function nextQuestion() {
   if (currentIndex.value < questionList.value.length - 1) {
     currentIndex.value++;
     userAnswer.value = "";
+    multiAnswers.value = [];
     aiResult.value = null;
   } else {
     appState.value = 'summary';
@@ -127,6 +139,8 @@ function restartTraining() {
   appState.value = 'setup';
   selectedTags.value = [];
   trainingResults.value = [];
+  userAnswer.value = "";
+  multiAnswers.value = [];
 }
 </script>
 
@@ -174,27 +188,40 @@ function restartTraining() {
         
         <div v-if="currentQuestion?.question_type === 'SINGLE'" class="options-container">
           <label v-for="opt in currentOptions" :key="opt" class="option-label">
-            <input 
-              type="radio" 
+            <input
+              type="radio"
               name="single_choice"
-              :value="opt.charAt(0)" 
-              v-model="userAnswer" 
-              :disabled="isLoading"
+              :value="opt.charAt(0)"
+              v-model="userAnswer"
+              :disabled="isLoading || !!aiResult"
+            >
+            {{ opt }}
+          </label>
+        </div>
+
+        <div v-else-if="currentQuestion?.question_type === 'MULTI'" class="options-container">
+          <p class="multi-hint">多选题，请选择所有正确答案</p>
+          <label v-for="opt in currentOptions" :key="opt" class="option-label">
+            <input
+              type="checkbox"
+              :value="opt.charAt(0)"
+              v-model="multiAnswers"
+              :disabled="isLoading || !!aiResult"
             >
             {{ opt }}
           </label>
         </div>
 
         <div v-else-if="currentQuestion?.question_type === 'ESSAY'">
-          <textarea 
-            v-model="userAnswer" 
-            placeholder="请详细阐述你的回答..." 
-            :disabled="isLoading"
+          <textarea
+            v-model="userAnswer"
+            placeholder="请详细阐述你的回答..."
+            :disabled="isLoading || !!aiResult"
           ></textarea>
         </div>
 
         <br />
-        <button class="submit-btn" @click="startEvaluation" :disabled="isLoading || !userAnswer">
+        <button class="submit-btn" @click="startEvaluation" :disabled="isLoading || !canSubmit">
           {{ isLoading ? "批阅中..." : "提交回答" }}
         </button>
       </section>
@@ -410,6 +437,7 @@ function restartTraining() {
 .question-text { font-size: 1.1rem; font-weight: bold; color: #2c3e50; margin: 10px 0;}
 .meta { font-size: 0.85em; color: #888; }
 textarea { width: 100%; height: 120px; padding: 12px; border-radius: 8px; border: 1px solid #ddd; resize: vertical; margin-bottom: 10px;}
+.multi-hint { font-size: 0.82rem; color: #888; margin: 0 0 10px; }
 .submit-btn { background: #000; color: #fff; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; }
 .submit-btn:disabled { background: #ccc; cursor: not-allowed; }
 .result-box { background: #fafafa; padding: 20px; border-radius: 8px; margin-top: 20px; border: 1px solid #eee;}

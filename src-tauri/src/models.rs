@@ -11,7 +11,7 @@ pub struct Question {
     pub tags: String,  
     pub difficulty: i32,  
     pub standard_answer: String,  
-    pub explanation: String, // AI生成的题目解析，导入时预生成  
+    pub explanation: String,
 }  
   
 // 2. 导入文件中单道题的格式
@@ -19,7 +19,7 @@ pub struct Question {
 pub struct ImportQuestion {  
     pub question_type: String,  
     pub content: String,  
-    pub options: Option<Vec<String>>, // 导入时是数组，入库前转成 JSON 字符串  
+    pub options: Option<Vec<String>>,
     pub tags: String,  
     pub difficulty: i32,  
     #[serde(default)]  

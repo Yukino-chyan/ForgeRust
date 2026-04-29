@@ -38,7 +38,34 @@ pub struct EvaluateResponse {
     pub score: i32,              // 0-100  
 }  
   
-// 4. 导入结果通知
+// 4. 保存训练记录（前端传入）
+#[derive(Debug, Deserialize)]
+pub struct SaveRecordInput {
+    pub question_id: i32,
+    pub user_answer: String,
+    pub score: i32,
+    pub is_correct: Option<bool>,
+    pub skipped: bool,
+    pub manually_added: bool,
+    pub time_spent: i32,
+}
+
+// 5. 错题本条目（后端查询返回）
+#[derive(Debug, Serialize, FromRow)]
+pub struct WrongQuestion {
+    pub question_id: i32,
+    pub content: String,
+    pub question_type: String,
+    pub tags: String,
+    pub difficulty: i32,
+    pub standard_answer: String,
+    pub wrong_count: i32,
+    pub last_score: i32,
+    pub last_attempt: String,
+    pub manually_added_count: i32,
+}
+
+// 6. 导入结果通知
 #[derive(Debug, Serialize, Deserialize)]  
 pub struct ImportResult {  
     pub total: usize,        // 共导入题目数  

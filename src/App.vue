@@ -5,8 +5,15 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 
 import QuestionTraining from "./components/QuestionTraining.vue";
+import WrongBook from "./components/WrongBook.vue";
 
-const currentView = ref<'training' | 'mock_interview'>('training');
+const currentView = ref<'training' | 'wrong_book' | 'mock_interview'>('training');
+const wrongPracticeIds = ref<number[]>([]);
+
+function handleWrongPractice(ids: number[]) {
+  wrongPracticeIds.value = ids;
+  currentView.value = 'training';
+}
 const isImporting = ref(false);
 const progress = ref({ current: 0, total: 0, message: "", is_finished: false });
 
@@ -92,6 +99,13 @@ async function handleImport() {
           <span>题库训练</span>
         </button>
         <button
+          :class="['nav-item', { active: currentView === 'wrong_book' }]"
+          @click="currentView = 'wrong_book'"
+        >
+          <span class="nav-icon">📕</span>
+          <span>错题本</span>
+        </button>
+        <button
           :class="['nav-item', { active: currentView === 'mock_interview' }]"
           @click="currentView = 'mock_interview'"
         >
@@ -143,7 +157,11 @@ async function handleImport() {
     <!-- 右侧内容区 -->
     <main class="main-content">
       <div v-if="currentView === 'training'" class="view-wrapper">
-        <QuestionTraining />
+        <QuestionTraining :wrong-practice-ids="wrongPracticeIds" @consumed="wrongPracticeIds = []" />
+      </div>
+
+      <div v-else-if="currentView === 'wrong_book'" class="view-wrapper">
+        <WrongBook @start-wrong-practice="handleWrongPractice" />
       </div>
 
       <div v-else-if="currentView === 'mock_interview'" class="placeholder-box">

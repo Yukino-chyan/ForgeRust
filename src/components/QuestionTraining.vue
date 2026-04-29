@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onUnmounted } from "vue";
+import { ref, computed, inject, onMounted, onUnmounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
 interface AiResponse {
@@ -25,7 +25,28 @@ interface TrainingResult {
   evaluation: AiResponse;
   timeSpent: number;
   skipped: boolean;
+  manuallyAdded: boolean;
 }
+
+const props = defineProps<{ wrongPracticeIds?: number[] }>();
+const emit = defineEmits<{ consumed: [] }>();
+
+// 错题本触发练习：收到 ids 后自动组卷
+watch(() => props.wrongPracticeIds, async (ids) => {
+  if (!ids || ids.length === 0) return;
+  try {
+    questionList.value = await invoke<Question[]>("generate_interview_from_ids", { questionIds: ids });
+    currentIndex.value = 0;
+    userAnswer.value = "";
+    multiAnswers.value = [];
+    aiResult.value = null;
+    trainingResults.value = [];
+    showExitConfirm.value = false;
+    appState.value = 'interview';
+    startTimer();
+    emit('consumed');
+  } catch (e) { alert(e); }
+}, { immediate: true });
 
 const tags = ref<string[]>([]);
 const tagCounts = ref<Record<string, number>>({});
@@ -137,6 +158,36 @@ function parseOption(opt: string): { letter: string; text: string } {
   return { letter: opt.charAt(0).toUpperCase(), text: opt.slice(1).trimStart() };
 }
 
+// 当前题对应的答题结果（提交后才有）
+const currentResult = computed(() =>
+  trainingResults.value.find(r => r.question.id === currentQuestion.value?.id)
+);
+
+function toggleManualMark() {
+  const r = currentResult.value;
+  if (r) r.manuallyAdded = !r.manuallyAdded;
+}
+
+async function saveTrainingSession() {
+  if (trainingResults.value.length === 0) return;
+  try {
+    await invoke("save_training_session", {
+      records: trainingResults.value.map(r => ({
+        question_id: r.question.id,
+        user_answer: r.userAnswer,
+        score: r.evaluation.score,
+        is_correct: r.evaluation.is_correct,
+        skipped: r.skipped,
+        manually_added: r.manuallyAdded,
+        time_spent: r.timeSpent,
+      })),
+      tags: selectedTags.value,
+    });
+  } catch (e) {
+    console.error("保存训练记录失败", e);
+  }
+}
+
 function toggleTag(tag: string) {
   const i = selectedTags.value.indexOf(tag);
   if (i > -1) selectedTags.value.splice(i, 1);
@@ -174,7 +225,7 @@ async function startEvaluation() {
       score: -1,
     };
     aiResult.value = result;
-    trainingResults.value.push({ question: q, userAnswer: userAnswer.value, evaluation: result, timeSpent: stopTimer(), skipped: false });
+    trainingResults.value.push({ question: q, userAnswer: userAnswer.value, evaluation: result, timeSpent: stopTimer(), skipped: false, manuallyAdded: false });
     return;
   }
 
@@ -191,6 +242,7 @@ async function startEvaluation() {
       evaluation: result,
       timeSpent: stopTimer(),
       skipped: false,
+      manuallyAdded: false,
     });
   } catch (error) {
     alert(`系统内部调用报错: ${error}`);
@@ -214,6 +266,7 @@ function skipQuestion() {
     },
     timeSpent: spent,
     skipped: true,
+    manuallyAdded: false,
   });
   if (currentIndex.value < questionList.value.length - 1) {
     currentIndex.value++;
@@ -235,6 +288,7 @@ function nextQuestion() {
     startTimer();
   } else {
     appState.value = 'summary';
+    saveTrainingSession();
   }
 }
 
@@ -470,9 +524,17 @@ function restartTraining() {
                 <p>{{ aiResult.explanation }}</p>
               </div>
 
-              <button class="next-btn" @click="nextQuestion">
-                {{ currentIndex < questionList.length - 1 ? '下一题 →' : '查看报告 →' }}
-              </button>
+              <div class="result-actions">
+                <button
+                  :class="['mark-btn', { marked: currentResult?.manuallyAdded }]"
+                  @click="toggleManualMark"
+                >
+                  {{ currentResult?.manuallyAdded ? '✅ 已加入错题本' : '📌 加入错题本' }}
+                </button>
+                <button class="next-btn" @click="nextQuestion">
+                  {{ currentIndex < questionList.length - 1 ? '下一题 →' : '查看报告 →' }}
+                </button>
+              </div>
             </div>
           </Transition>
         </div>
@@ -1110,6 +1172,30 @@ textarea:disabled { opacity: 0.5; }
   padding: 14px;
 }
 .explanation p { color: #90cdf4; font-size: 0.88rem; line-height: 1.7; }
+
+.result-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.mark-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px dashed rgba(246,173,85,0.4);
+  background: transparent;
+  color: #f6ad55;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.mark-btn:hover { background: rgba(246,173,85,0.08); border-color: rgba(246,173,85,0.7); }
+.mark-btn.marked {
+  border-style: solid;
+  background: rgba(104,211,145,0.08);
+  border-color: rgba(104,211,145,0.4);
+  color: #68d391;
+}
 
 .next-btn {
   align-self: flex-end;

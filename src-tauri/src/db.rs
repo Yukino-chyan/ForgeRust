@@ -29,10 +29,41 @@ pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)  
     .await?;  
   
-    let _ = sqlx::query("ALTER TABLE questions ADD COLUMN explanation TEXT NOT NULL DEFAULT ''")  
-        .execute(&pool)  
-        .await;  
-   
+    let _ = sqlx::query("ALTER TABLE questions ADD COLUMN explanation TEXT NOT NULL DEFAULT ''")
+        .execute(&pool)
+        .await;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS training_sessions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+            total_count   INTEGER NOT NULL,
+            correct_count INTEGER NOT NULL,
+            average_score REAL    NOT NULL,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            tags          TEXT    NOT NULL DEFAULT ''
+        );"
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS training_records (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     INTEGER NOT NULL REFERENCES training_sessions(id) ON DELETE CASCADE,
+            question_id    INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+            user_answer    TEXT    NOT NULL DEFAULT '',
+            score          INTEGER NOT NULL DEFAULT 0,
+            is_correct     INTEGER,
+            skipped        INTEGER NOT NULL DEFAULT 0,
+            manually_added INTEGER NOT NULL DEFAULT 0,
+            time_spent     INTEGER NOT NULL DEFAULT 0,
+            created_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+        );"
+    )
+    .execute(&pool)
+    .await?;
+
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM questions")  
         .fetch_one(&pool)  
         .await?;  

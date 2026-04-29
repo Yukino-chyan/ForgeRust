@@ -4,7 +4,7 @@ mod llm_client;
 mod config;
 
 use crate::config::AppConfig;
-use crate::models::{EvaluateResponse, ImportQuestion, ImportResult, Question, ImportProgress};
+use crate::models::{EvaluateResponse, ImportQuestion, ImportResult, Question, ImportProgress, SaveRecordInput, WrongQuestion};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -34,6 +34,110 @@ fn set_api_config(
     cfg.api_key = api_key;
     cfg.api_url = api_url;
     cfg.save(&config_dir.0)
+}
+
+// ── 训练记录命令 ──────────────────────────────────────────
+
+#[tauri::command]
+async fn save_training_session(
+    records: Vec<SaveRecordInput>,
+    tags: Vec<String>,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<(), String> {
+    if records.is_empty() { return Ok(()); }
+
+    let total = records.len() as i32;
+    let correct = records.iter().filter(|r| {
+        if r.skipped { return false; }
+        r.is_correct.unwrap_or(false) || (!r.is_correct.is_some() && r.score >= 60)
+    }).count() as i32;
+    let skipped = records.iter().filter(|r| r.skipped).count() as i32;
+    let scored: Vec<_> = records.iter().filter(|r| r.score >= 0).collect();
+    let avg = if scored.is_empty() { 0.0 }
+              else { scored.iter().map(|r| r.score as f64).sum::<f64>() / scored.len() as f64 };
+
+    let session_id: i64 = sqlx::query_scalar(
+        "INSERT INTO training_sessions (total_count, correct_count, average_score, skipped_count, tags)
+         VALUES (?, ?, ?, ?, ?) RETURNING id"
+    )
+    .bind(total)
+    .bind(correct)
+    .bind(avg)
+    .bind(skipped)
+    .bind(tags.join(","))
+    .fetch_one(&*pool)
+    .await
+    .map_err(|e| format!("保存训练会话失败: {}", e))?;
+
+    for r in &records {
+        sqlx::query(
+            "INSERT INTO training_records
+                (session_id, question_id, user_answer, score, is_correct, skipped, manually_added, time_spent)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(session_id)
+        .bind(r.question_id)
+        .bind(&r.user_answer)
+        .bind(r.score)
+        .bind(r.is_correct.map(|b| b as i32))
+        .bind(r.skipped as i32)
+        .bind(r.manually_added as i32)
+        .bind(r.time_spent)
+        .execute(&*pool)
+        .await
+        .map_err(|e| format!("保存题目记录失败: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_wrong_questions(
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<WrongQuestion>, String> {
+    sqlx::query_as::<_, WrongQuestion>(
+        "SELECT
+            q.id          AS question_id,
+            q.content,
+            q.question_type,
+            q.tags,
+            q.difficulty,
+            q.standard_answer,
+            COUNT(*)                                        AS wrong_count,
+            MAX(r.score)                                    AS last_score,
+            MAX(r.created_at)                               AS last_attempt,
+            SUM(r.manually_added)                           AS manually_added_count
+         FROM training_records r
+         JOIN questions q ON q.id = r.question_id
+         WHERE r.score < 60 OR r.is_correct = 0 OR r.manually_added = 1
+         GROUP BY q.id
+         ORDER BY wrong_count DESC, last_attempt DESC"
+    )
+    .fetch_all(&*pool)
+    .await
+    .map_err(|e| format!("查询错题本失败: {}", e))
+}
+
+#[tauri::command]
+async fn generate_interview_from_ids(
+    question_ids: Vec<i32>,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<Question>, String> {
+    if question_ids.is_empty() {
+        return Err("没有可练习的错题".into());
+    }
+    let placeholders = question_ids.iter().enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT * FROM questions WHERE id IN ({}) ORDER BY RANDOM()",
+        placeholders
+    );
+    let mut query = sqlx::query_as::<_, Question>(&sql);
+    for id in &question_ids {
+        query = query.bind(id);
+    }
+    query.fetch_all(&*pool).await.map_err(|e| format!("组卷失败: {}", e))
 }
 
 // ── 题库命令 ──────────────────────────────────────────────
@@ -376,12 +480,15 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_random_question,
             generate_interview,
+            generate_interview_from_ids,
             evaluate_answer,
             import_questions_from_file,
             get_all_tags,
             get_tag_counts,
             get_api_config,
             set_api_config,
+            save_training_session,
+            get_wrong_questions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

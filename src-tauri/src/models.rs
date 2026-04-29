@@ -59,6 +59,7 @@ pub struct WrongQuestion {
     pub tags: String,
     pub difficulty: i32,
     pub standard_answer: String,
+    pub explanation: String,
     pub wrong_count: i32,
     pub last_score: i32,
     pub last_attempt: String,

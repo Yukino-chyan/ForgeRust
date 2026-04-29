@@ -29,29 +29,61 @@ interface TrainingResult {
 }
 
 const props = defineProps<{ wrongPracticeIds?: number[] }>();
-const emit = defineEmits<{ consumed: [] }>();
+const emit = defineEmits<{
+  consumed: [];
+  stateChange: [state: 'setup' | 'interview' | 'summary'];
+}>();
 
-// 错题本触发练习：收到 ids 后自动组卷
+// ── 所有 ref 在任何 watch 之前声明，避免 TDZ ──
+const hasPending = !!(props.wrongPracticeIds && props.wrongPracticeIds.length > 0);
+const appState    = ref<'setup' | 'interview' | 'summary'>(hasPending ? 'interview' : 'setup');
+const isPreloading = ref(hasPending);
+
+const sessionSaved   = ref(false);
+const selectedTags   = ref<string[]>([]);
+const countPerTag    = ref(2);
+const useAI          = ref(true);
+const questionList   = ref<Question[]>([]);
+const currentIndex   = ref(0);
+const userAnswer     = ref("");
+const multiAnswers   = ref<string[]>([]);
+const aiResult       = ref<AiResponse | null>(null);
+const isLoading      = ref(false);
+const trainingResults = ref<TrainingResult[]>([]);
+const showExitConfirm = ref(false);
+
+const tags       = ref<string[]>([]);
+const tagCounts  = ref<Record<string, number>>({});
+const injectedApiKey = inject<ReturnType<typeof ref<string>>>("apiKey");
+const hasApiKey  = computed(() => !!injectedApiKey?.value?.trim());
+
+// appState 变化时通知父组件
+watch(appState, s => emit('stateChange', s), { immediate: true });
+
+// 错题本触发练习：prop 有值时立即进入 interview（状态已在上方同步初始化）
 watch(() => props.wrongPracticeIds, async (ids) => {
   if (!ids || ids.length === 0) return;
+  currentIndex.value = 0;
+  userAnswer.value = "";
+  multiAnswers.value = [];
+  aiResult.value = null;
+  trainingResults.value = [];
+  showExitConfirm.value = false;
+  sessionSaved.value = false;
+  questionList.value = [];
+  appState.value = 'interview';
+  isPreloading.value = true;
+  startTimer();
   try {
     questionList.value = await invoke<Question[]>("generate_interview_from_ids", { questionIds: ids });
-    currentIndex.value = 0;
-    userAnswer.value = "";
-    multiAnswers.value = [];
-    aiResult.value = null;
-    trainingResults.value = [];
-    showExitConfirm.value = false;
-    appState.value = 'interview';
-    startTimer();
     emit('consumed');
-  } catch (e) { alert(e); }
+  } catch (e) {
+    appState.value = 'setup';
+    alert(e);
+  } finally {
+    isPreloading.value = false;
+  }
 }, { immediate: true });
-
-const tags = ref<string[]>([]);
-const tagCounts = ref<Record<string, number>>({});
-const injectedApiKey = inject<ReturnType<typeof ref<string>>>("apiKey");
-const hasApiKey = computed(() => !!injectedApiKey?.value?.trim());
 
 onMounted(async () => {
   try {
@@ -63,22 +95,6 @@ onMounted(async () => {
     console.error("加载标签失败", e);
   }
 });
-
-const appState = ref<'setup' | 'interview' | 'summary'>('setup');
-const selectedTags = ref<string[]>([]);
-const countPerTag = ref(2);
-const useAI = ref(true);
-const questionList = ref<Question[]>([]);
-const currentIndex = ref(0);
-
-const userAnswer = ref("");
-const multiAnswers = ref<string[]>([]);
-const aiResult = ref<AiResponse | null>(null);
-const isLoading = ref(false);
-const trainingResults = ref<TrainingResult[]>([]);
-
-// ── 退出确认 ──
-const showExitConfirm = ref(false);
 
 // ── 计时器 ──
 const elapsedSeconds = ref(0);
@@ -101,7 +117,11 @@ function stopTimer(): number {
   return elapsedSeconds.value;
 }
 
-onUnmounted(() => { if (timerInterval) clearInterval(timerInterval); });
+onUnmounted(() => {
+  if (timerInterval) clearInterval(timerInterval);
+  // 用户在 summary 页切换侧边栏时，组件卸载前保存
+  if (appState.value === 'summary') saveTrainingSession();
+});
 
 const canSubmit = computed(() => {
   if (!currentQuestion.value) return false;
@@ -169,7 +189,8 @@ function toggleManualMark() {
 }
 
 async function saveTrainingSession() {
-  if (trainingResults.value.length === 0) return;
+  if (sessionSaved.value || trainingResults.value.length === 0) return;
+  sessionSaved.value = true;
   try {
     await invoke("save_training_session", {
       records: trainingResults.value.map(r => ({
@@ -204,6 +225,7 @@ async function startInterview() {
     aiResult.value = null;
     trainingResults.value = [];
     showExitConfirm.value = false;
+    sessionSaved.value = false;
     appState.value = 'interview';
     startTimer();
   } catch (error) { alert(error); }
@@ -288,7 +310,6 @@ function nextQuestion() {
     startTimer();
   } else {
     appState.value = 'summary';
-    saveTrainingSession();
   }
 }
 
@@ -303,6 +324,7 @@ function confirmExit() {
 }
 
 function restartTraining() {
+  saveTrainingSession(); // summary 页点"再来一套"时保存，sessionSaved 防重复
   stopTimer();
   appState.value = 'setup';
   selectedTags.value = [];
@@ -416,7 +438,13 @@ function restartTraining() {
           </div>
         </Transition>
 
-        <div class="interview-content">
+        <!-- 错题重练加载中 -->
+        <div v-if="isPreloading" class="preload-screen">
+          <span class="preload-dot">.</span><span class="preload-dot">.</span><span class="preload-dot">.</span>
+          <p>题目加载中</p>
+        </div>
+
+        <div v-else class="interview-content">
           <!-- 题号 & 元信息 -->
           <div class="question-meta">
             <span class="q-index">{{ currentIndex + 1 }} / {{ questionList.length }}</span>
@@ -546,8 +574,13 @@ function restartTraining() {
       <div v-if="appState === 'summary'" class="page summary-page" key="summary">
         <div class="summary-content">
           <div class="summary-header">
-            <h2>训练完成</h2>
-            <p>本次共 {{ totalCount }} 道题，以下是你的表现</p>
+            <div>
+              <h2>训练完成</h2>
+              <p>本次共 {{ totalCount }} 道题，以下是你的表现</p>
+            </div>
+            <button class="mark-all-btn" @click="trainingResults.forEach(r => r.manuallyAdded = true)">
+              📌 全部加入错题本
+            </button>
           </div>
 
           <div class="stat-cards">
@@ -626,6 +659,11 @@ function restartTraining() {
                 <span :class="r.evaluation.score >= 60 ? 'score-good' : 'score-bad'">{{ r.evaluation.score }}</span>
                 <span class="score-unit-sm">分</span>
                 <span class="item-time">{{ Math.floor(r.timeSpent / 60) }}:{{ String(r.timeSpent % 60).padStart(2, '0') }}</span>
+                <button
+                  :class="['item-mark-btn', { marked: r.manuallyAdded }]"
+                  @click.stop="r.manuallyAdded = !r.manuallyAdded"
+                  :title="r.manuallyAdded ? '取消标记' : '加入错题本'"
+                >{{ r.manuallyAdded ? '✅' : '📌' }}</button>
               </div>
             </div>
           </div>
@@ -866,6 +904,27 @@ function restartTraining() {
 }
 .start-btn:disabled { background: rgba(255,255,255,0.08); color: #4a5568; cursor: not-allowed; box-shadow: none; }
 .start-hint { font-size: 0.82rem; opacity: 0.7; font-weight: 400; }
+
+/* ===== 错题重练加载占位 ===== */
+.preload-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  color: #4a5568;
+  font-size: 0.9rem;
+}
+.preload-dot {
+  display: inline-block;
+  animation: blink 1.2s infinite;
+  opacity: 0;
+  font-size: 1.6rem;
+  line-height: 1;
+}
+.preload-dot:nth-child(2) { animation-delay: 0.2s; }
+.preload-dot:nth-child(3) { animation-delay: 0.4s; }
 
 /* ===== 答题页 ===== */
 .progress-bar-wrap {
@@ -1221,7 +1280,12 @@ textarea:disabled { opacity: 0.5; }
   flex-direction: column;
   gap: 24px;
 }
-.summary-header { text-align: center; }
+.summary-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
 .summary-header h2 {
   font-size: 1.8rem;
   font-weight: 700;
@@ -1321,6 +1385,41 @@ textarea:disabled { opacity: 0.5; }
 .score-good { font-size: 1.5rem; font-weight: 800; color: #68d391; }
 .score-bad  { font-size: 1.5rem; font-weight: 800; color: #fc8181; }
 .score-unit-sm { font-size: 0.7rem; color: #4a5568; }
+
+.mark-all-btn {
+  padding: 10px 20px;
+  border-radius: 10px;
+  border: 1px solid rgba(246,173,85,0.35);
+  background: rgba(246,173,85,0.08);
+  color: #f6ad55;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+.mark-all-btn:hover { background: rgba(246,173,85,0.18); border-color: rgba(246,173,85,0.6); }
+
+.item-mark-btn {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px dashed rgba(246,173,85,0.35);
+  background: transparent;
+  color: #f6ad55;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: all 0.18s;
+  margin-top: 6px;
+}
+.item-mark-btn:hover { background: rgba(246,173,85,0.1); }
+.item-mark-btn.marked {
+  border-style: solid;
+  background: rgba(104,211,145,0.08);
+  border-color: rgba(104,211,145,0.4);
+  color: #68d391;
+}
 
 .restart-btn {
   width: 100%;

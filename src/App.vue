@@ -9,6 +9,37 @@ import WrongBook from "./components/WrongBook.vue";
 
 const currentView = ref<'training' | 'wrong_book' | 'mock_interview'>('training');
 const wrongPracticeIds = ref<number[]>([]);
+const trainingState = ref<'setup' | 'interview' | 'summary'>('setup');
+const pendingView = ref<'training' | 'wrong_book' | 'mock_interview' | null>(null);
+const showNavWarning = ref(false);
+
+function handleStateChange(state: 'setup' | 'interview' | 'summary') {
+  trainingState.value = state;
+  // if training finished, clear any pending nav
+  if (state !== 'interview') showNavWarning.value = false;
+}
+
+function navigateTo(view: 'training' | 'wrong_book' | 'mock_interview') {
+  if (currentView.value === 'training' && trainingState.value === 'interview') {
+    pendingView.value = view;
+    showNavWarning.value = true;
+    return;
+  }
+  showNavWarning.value = false;
+  currentView.value = view;
+}
+
+function confirmNavAway() {
+  if (pendingView.value) currentView.value = pendingView.value;
+  pendingView.value = null;
+  showNavWarning.value = false;
+  trainingState.value = 'setup';
+}
+
+function cancelNavAway() {
+  pendingView.value = null;
+  showNavWarning.value = false;
+}
 
 function handleWrongPractice(ids: number[]) {
   wrongPracticeIds.value = ids;
@@ -93,27 +124,38 @@ async function handleImport() {
       <nav class="nav-menu">
         <button
           :class="['nav-item', { active: currentView === 'training' }]"
-          @click="currentView = 'training'"
+          @click="navigateTo('training')"
         >
           <span class="nav-icon">📝</span>
           <span>题库训练</span>
         </button>
         <button
           :class="['nav-item', { active: currentView === 'wrong_book' }]"
-          @click="currentView = 'wrong_book'"
+          @click="navigateTo('wrong_book')"
         >
           <span class="nav-icon">📕</span>
           <span>错题本</span>
         </button>
         <button
           :class="['nav-item', { active: currentView === 'mock_interview' }]"
-          @click="currentView = 'mock_interview'"
+          @click="navigateTo('mock_interview')"
         >
           <span class="nav-icon">🤖</span>
           <span>模拟面试</span>
           <span class="badge">即将上线</span>
         </button>
       </nav>
+
+      <!-- 导航拦截警告 -->
+      <Transition name="nav-warn">
+        <div v-if="showNavWarning" class="nav-warn-box">
+          <p class="nav-warn-text">⚠️ 训练进行中，离开将丢失当前进度</p>
+          <div class="nav-warn-actions">
+            <button class="nav-warn-stay" @click="cancelNavAway">继续训练</button>
+            <button class="nav-warn-leave" @click="confirmNavAway">确定离开</button>
+          </div>
+        </div>
+      </Transition>
 
       <div class="sidebar-footer">
         <button class="import-btn" @click="handleImport" :disabled="isImporting">
@@ -157,7 +199,11 @@ async function handleImport() {
     <!-- 右侧内容区 -->
     <main class="main-content">
       <div v-if="currentView === 'training'" class="view-wrapper">
-        <QuestionTraining :wrong-practice-ids="wrongPracticeIds" @consumed="wrongPracticeIds = []" />
+        <QuestionTraining
+          :wrong-practice-ids="wrongPracticeIds"
+          @consumed="wrongPracticeIds = []"
+          @state-change="handleStateChange"
+        />
       </div>
 
       <div v-else-if="currentView === 'wrong_book'" class="view-wrapper">
@@ -430,6 +476,50 @@ body, html {
 
 .settings-enter-active, .settings-leave-active { transition: all 0.2s ease; }
 .settings-enter-from, .settings-leave-to { opacity: 0; transform: translateY(-6px); }
+
+.nav-warn-box {
+  margin-top: 12px;
+  padding: 12px;
+  background: rgba(252,129,129,0.08);
+  border: 1px solid rgba(252,129,129,0.25);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.nav-warn-text {
+  font-size: 0.78rem;
+  color: #fc8181;
+  line-height: 1.4;
+}
+.nav-warn-actions { display: flex; gap: 6px; }
+.nav-warn-stay {
+  flex: 1;
+  padding: 6px 0;
+  border-radius: 7px;
+  border: 1px solid rgba(99,179,237,0.25);
+  background: transparent;
+  color: #90cdf4;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.nav-warn-stay:hover { background: rgba(79,172,254,0.1); }
+.nav-warn-leave {
+  flex: 1;
+  padding: 6px 0;
+  border-radius: 7px;
+  border: none;
+  background: rgba(252,129,129,0.18);
+  color: #fc8181;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.nav-warn-leave:hover { background: rgba(252,129,129,0.3); }
+.nav-warn-enter-active, .nav-warn-leave-active { transition: all 0.2s ease; }
+.nav-warn-enter-from, .nav-warn-leave-to { opacity: 0; transform: translateY(-6px); }
 
 /* ===== 主内容区 ===== */
 .main-content {

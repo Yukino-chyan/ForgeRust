@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(npx vue-tsc *)"
+    ],
+    "additionalDirectories": [
+      "e:\\2026_Junior_S2\\Rust\\Project"
+    ]
+  }
+}

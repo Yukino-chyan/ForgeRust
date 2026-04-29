@@ -102,6 +102,7 @@ async fn get_wrong_questions(
             q.tags,
             q.difficulty,
             q.standard_answer,
+            q.explanation,
             COUNT(*)                                        AS wrong_count,
             MAX(r.score)                                    AS last_score,
             MAX(r.created_at)                               AS last_attempt,
@@ -115,6 +116,19 @@ async fn get_wrong_questions(
     .fetch_all(&*pool)
     .await
     .map_err(|e| format!("查询错题本失败: {}", e))
+}
+
+#[tauri::command]
+async fn remove_from_wrong_book(
+    question_id: i32,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM training_records WHERE question_id = ?")
+        .bind(question_id)
+        .execute(&*pool)
+        .await
+        .map_err(|e| format!("删除失败: {}", e))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -489,6 +503,7 @@ pub fn run() {
             set_api_config,
             save_training_session,
             get_wrong_questions,
+            remove_from_wrong_book,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

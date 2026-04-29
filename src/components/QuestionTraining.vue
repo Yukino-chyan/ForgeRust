@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted } from "vue";
+import { ref, computed, inject, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
 interface AiResponse {
@@ -23,6 +23,7 @@ interface TrainingResult {
   question: Question;
   userAnswer: string;
   evaluation: AiResponse;
+  timeSpent: number;
 }
 
 const tags = ref<string[]>([]);
@@ -53,6 +54,33 @@ const multiAnswers = ref<string[]>([]);
 const aiResult = ref<AiResponse | null>(null);
 const isLoading = ref(false);
 const trainingResults = ref<TrainingResult[]>([]);
+const skippedCount = ref(0);
+
+// ── 退出确认 ──
+const showExitConfirm = ref(false);
+
+// ── 计时器 ──
+const elapsedSeconds = ref(0);
+let timerInterval: ReturnType<typeof setInterval> | null = null;
+
+const formattedTime = computed(() => {
+  const m = Math.floor(elapsedSeconds.value / 60);
+  const s = elapsedSeconds.value % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+});
+
+function startTimer() {
+  elapsedSeconds.value = 0;
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = setInterval(() => { elapsedSeconds.value++; }, 1000);
+}
+
+function stopTimer(): number {
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  return elapsedSeconds.value;
+}
+
+onUnmounted(() => { if (timerInterval) clearInterval(timerInterval); });
 
 const canSubmit = computed(() => {
   if (!currentQuestion.value) return false;
@@ -122,7 +150,10 @@ async function startInterview() {
     multiAnswers.value = [];
     aiResult.value = null;
     trainingResults.value = [];
+    skippedCount.value = 0;
+    showExitConfirm.value = false;
     appState.value = 'interview';
+    startTimer();
   } catch (error) { alert(error); }
 }
 
@@ -132,7 +163,6 @@ async function startEvaluation() {
   }
   if (!userAnswer.value) return alert("请先给出你的答案！");
 
-  // 关闭 AI 且为简答题：直接展示标准答案，跳过 API 调用
   if (!useAI.value && currentQuestion.value?.question_type === 'ESSAY') {
     const q = currentQuestion.value;
     const result: AiResponse = {
@@ -143,7 +173,7 @@ async function startEvaluation() {
       score: -1,
     };
     aiResult.value = result;
-    trainingResults.value.push({ question: q, userAnswer: userAnswer.value, evaluation: result });
+    trainingResults.value.push({ question: q, userAnswer: userAnswer.value, evaluation: result, timeSpent: stopTimer() });
     return;
   }
 
@@ -158,11 +188,26 @@ async function startEvaluation() {
       question: currentQuestion.value,
       userAnswer: userAnswer.value,
       evaluation: result,
+      timeSpent: stopTimer(),
     });
   } catch (error) {
     alert(`系统内部调用报错: ${error}`);
   } finally {
     isLoading.value = false;
+  }
+}
+
+function skipQuestion() {
+  skippedCount.value++;
+  stopTimer();
+  if (currentIndex.value < questionList.value.length - 1) {
+    currentIndex.value++;
+    userAnswer.value = "";
+    multiAnswers.value = [];
+    aiResult.value = null;
+    startTimer();
+  } else {
+    appState.value = 'summary';
   }
 }
 
@@ -172,18 +217,32 @@ function nextQuestion() {
     userAnswer.value = "";
     multiAnswers.value = [];
     aiResult.value = null;
+    startTimer();
   } else {
     appState.value = 'summary';
   }
 }
 
+function exitTraining() {
+  showExitConfirm.value = true;
+}
+
+function confirmExit() {
+  stopTimer();
+  showExitConfirm.value = false;
+  restartTraining();
+}
+
 function restartTraining() {
+  stopTimer();
   appState.value = 'setup';
   selectedTags.value = [];
   trainingResults.value = [];
+  skippedCount.value = 0;
   userAnswer.value = "";
   multiAnswers.value = [];
   aiResult.value = null;
+  showExitConfirm.value = false;
 }
 </script>
 
@@ -278,6 +337,17 @@ function restartTraining() {
           <div class="progress-bar" :style="{ width: progress + '%' }"></div>
         </div>
 
+        <!-- 退出确认条 -->
+        <Transition name="exit-confirm">
+          <div v-if="showExitConfirm" class="exit-confirm-bar">
+            <span>确定退出本次训练？已答记录将丢失。</span>
+            <div class="exit-confirm-actions">
+              <button class="exit-cancel-btn" @click="showExitConfirm = false">继续训练</button>
+              <button class="exit-ok-btn" @click="confirmExit">确定退出</button>
+            </div>
+          </div>
+        </Transition>
+
         <div class="interview-content">
           <!-- 题号 & 元信息 -->
           <div class="question-meta">
@@ -287,6 +357,8 @@ function restartTraining() {
             <span :class="['q-diff', `diff-${currentQuestion?.difficulty}`]">
               {{ difficultyLabel(currentQuestion?.difficulty) }}
             </span>
+            <span class="q-timer">⏱ {{ formattedTime }}</span>
+            <button class="exit-btn" @click="exitTraining">退出</button>
           </div>
 
           <!-- 题目内容 -->
@@ -338,14 +410,21 @@ function restartTraining() {
               ></textarea>
             </div>
 
-            <button
-              class="submit-btn"
-              @click="startEvaluation"
-              :disabled="isLoading || !canSubmit"
-            >
-              <span v-if="isLoading" class="loading-dots">批阅中<span>.</span><span>.</span><span>.</span></span>
-              <span v-else>提交回答</span>
-            </button>
+            <div class="answer-actions">
+              <button
+                class="skip-btn"
+                @click="skipQuestion"
+                :disabled="isLoading || !!aiResult"
+              >跳过此题</button>
+              <button
+                class="submit-btn"
+                @click="startEvaluation"
+                :disabled="isLoading || !canSubmit || !!aiResult"
+              >
+                <span v-if="isLoading" class="loading-dots">批阅中<span>.</span><span>.</span><span>.</span></span>
+                <span v-else>提交回答</span>
+              </button>
+            </div>
           </div>
 
           <!-- 评阅结果 -->
@@ -408,6 +487,10 @@ function restartTraining() {
               <div :class="['stat-value', averageScore === '--' ? 'neutral' : (averageScore as number) >= 60 ? 'good' : 'bad']">{{ averageScore }}</div>
               <div class="stat-label">平均分</div>
             </div>
+            <div class="stat-card">
+              <div :class="['stat-value', skippedCount > 0 ? 'bad' : 'good']">{{ skippedCount }}</div>
+              <div class="stat-label">跳过题数</div>
+            </div>
           </div>
 
           <div class="result-list">
@@ -457,6 +540,7 @@ function restartTraining() {
               <div class="item-score">
                 <span :class="r.evaluation.score >= 60 ? 'score-good' : 'score-bad'">{{ r.evaluation.score }}</span>
                 <span class="score-unit-sm">分</span>
+                <span class="item-time">{{ Math.floor(r.timeSpent / 60) }}:{{ String(r.timeSpent % 60).padStart(2, '0') }}</span>
               </div>
             </div>
           </div>
@@ -832,12 +916,98 @@ textarea {
 textarea:focus { border-color: rgba(79,172,254,0.4); box-shadow: 0 0 0 3px rgba(79,172,254,0.08); }
 textarea:disabled { opacity: 0.5; }
 
+/* ===== 退出确认条 ===== */
+.exit-confirm-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 32px;
+  background: rgba(252,129,129,0.1);
+  border-bottom: 1px solid rgba(252,129,129,0.2);
+  font-size: 0.875rem;
+  color: #fc8181;
+  gap: 16px;
+}
+.exit-confirm-actions { display: flex; gap: 8px; }
+.exit-cancel-btn {
+  padding: 6px 16px;
+  border-radius: 7px;
+  border: 1px solid rgba(99,179,237,0.25);
+  background: transparent;
+  color: #90cdf4;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.exit-cancel-btn:hover { background: rgba(79,172,254,0.1); }
+.exit-ok-btn {
+  padding: 6px 16px;
+  border-radius: 7px;
+  border: none;
+  background: rgba(252,129,129,0.2);
+  color: #fc8181;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.exit-ok-btn:hover { background: rgba(252,129,129,0.35); }
+.exit-confirm-enter-active, .exit-confirm-leave-active { transition: all 0.2s ease; }
+.exit-confirm-enter-from, .exit-confirm-leave-to { opacity: 0; transform: translateY(-8px); }
+
+/* ===== 计时器 & 退出按钮（题号行） ===== */
+.q-timer {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: #4a5568;
+  font-variant-numeric: tabular-nums;
+}
+.exit-btn {
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(252,129,129,0.25);
+  background: transparent;
+  color: #718096;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.18s;
+  flex-shrink: 0;
+}
+.exit-btn:hover { border-color: rgba(252,129,129,0.5); color: #fc8181; background: rgba(252,129,129,0.08); }
+
+/* ===== 答题操作行（跳过 + 提交） ===== */
+.answer-actions {
+  display: flex;
+  gap: 10px;
+}
+.skip-btn {
+  padding: 12px 20px;
+  border: 1px solid rgba(99,179,237,0.15);
+  border-radius: 10px;
+  background: transparent;
+  color: #4a5568;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.18s;
+  white-space: nowrap;
+}
+.skip-btn:hover:not(:disabled) { border-color: rgba(99,179,237,0.35); color: #718096; }
+.skip-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ===== 每题用时（总结页） ===== */
+.item-time {
+  font-size: 0.68rem;
+  color: #4a5568;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
 .submit-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  width: 100%;
+  flex: 1;
   padding: 12px;
   border: none;
   border-radius: 10px;

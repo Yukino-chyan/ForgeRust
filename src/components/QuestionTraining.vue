@@ -17,6 +17,7 @@ interface Question {
   tags: string;
   difficulty: number;
   standard_answer: string;
+  explanation: string;
 }
 interface TrainingResult {
   question: Question;
@@ -36,7 +37,7 @@ onMounted(async () => {
 const appState = ref<'setup' | 'interview' | 'summary'>('setup');
 const selectedTags = ref<string[]>([]);
 const countPerTag = ref(2);
-const countOptions = [1, 2, 3, 5];
+const useAI = ref(true);
 const questionList = ref<Question[]>([]);
 const currentIndex = ref(0);
 
@@ -64,13 +65,15 @@ const progress = computed(() =>
 
 const totalCount   = computed(() => trainingResults.value.length);
 const correctCount = computed(() =>
-  trainingResults.value.filter(r =>
-    r.evaluation.is_correct !== null ? r.evaluation.is_correct : r.evaluation.score >= 60
-  ).length
+  trainingResults.value.filter(r => {
+    if (r.evaluation.score === -1) return false;
+    return r.evaluation.is_correct !== null ? r.evaluation.is_correct : r.evaluation.score >= 60;
+  }).length
 );
+const scoredResults = computed(() => trainingResults.value.filter(r => r.evaluation.score !== -1));
 const averageScore = computed(() => {
-  if (totalCount.value === 0) return 0;
-  return Math.round(trainingResults.value.reduce((a, r) => a + r.evaluation.score, 0) / totalCount.value);
+  if (scoredResults.value.length === 0) return '--';
+  return Math.round(scoredResults.value.reduce((a, r) => a + r.evaluation.score, 0) / scoredResults.value.length);
 });
 const accuracyRate = computed(() =>
   totalCount.value === 0 ? 0 : Math.round((correctCount.value / totalCount.value) * 100)
@@ -103,6 +106,22 @@ async function startEvaluation() {
     userAnswer.value = [...multiAnswers.value].sort().join(',');
   }
   if (!userAnswer.value) return alert("请先给出你的答案！");
+
+  // 关闭 AI 且为简答题：直接展示标准答案，跳过 API 调用
+  if (!useAI.value && currentQuestion.value?.question_type === 'ESSAY') {
+    const q = currentQuestion.value;
+    const result: AiResponse = {
+      standard_answer: q.standard_answer,
+      explanation: q.explanation,
+      is_correct: null,
+      ai_comment: "AI 点评已关闭，请对照标准答案自行评估。",
+      score: -1,
+    };
+    aiResult.value = result;
+    trainingResults.value.push({ question: q, userAnswer: userAnswer.value, evaluation: result });
+    return;
+  }
+
   isLoading.value = true;
   try {
     const result: AiResponse = await invoke("evaluate_answer", {
@@ -169,17 +188,33 @@ function restartTraining() {
             </div>
           </div>
 
-          <div class="count-section">
-            <div class="section-label">
-              <span>每个考点题数</span>
-              <span class="tag-count">共约 {{ selectedTags.length * countPerTag }} 道题</span>
+          <div class="bottom-options">
+            <div class="count-section">
+              <div class="section-label">
+                <span>每个考点题数</span>
+                <span class="tag-count">共约 {{ selectedTags.length * countPerTag }} 道题</span>
+              </div>
+              <input
+                type="number"
+                class="count-input"
+                v-model.number="countPerTag"
+                min="1"
+                max="20"
+                placeholder="输入题目数量"
+              />
             </div>
-            <div class="count-options">
-              <button
-                v-for="n in countOptions" :key="n"
-                :class="['count-btn', { selected: countPerTag === n }]"
-                @click="countPerTag = n"
-              >{{ n }} 题</button>
+
+            <div class="ai-section">
+              <div class="section-label">
+                <span>AI 点评</span>
+                <span :class="['ai-status', useAI ? 'on' : 'off']">{{ useAI ? '已开启' : '已关闭' }}</span>
+              </div>
+              <button :class="['ai-toggle', { active: useAI }]" @click="useAI = !useAI">
+                <span class="toggle-track">
+                  <span class="toggle-thumb"></span>
+                </span>
+                <span class="toggle-label">{{ useAI ? '简答题将由 AI 评分' : '仅展示标准答案' }}</span>
+              </button>
             </div>
           </div>
 
@@ -278,10 +313,11 @@ function restartTraining() {
           <Transition name="result">
             <div v-if="aiResult" class="result-card">
               <div class="result-score-row">
-                <div :class="['score-badge', aiResult.score >= 60 ? 'pass' : 'fail']">
+                <div v-if="aiResult.score !== -1" :class="['score-badge', aiResult.score >= 60 ? 'pass' : 'fail']">
                   {{ aiResult.score }}
                   <span class="score-unit">分</span>
                 </div>
+                <div v-else class="score-badge no-score">未评分</div>
                 <div v-if="aiResult.is_correct !== null" :class="['verdict', aiResult.is_correct ? 'correct' : 'wrong']">
                   {{ aiResult.is_correct ? '✅ 回答正确' : '❌ 回答错误' }}
                 </div>
@@ -330,7 +366,7 @@ function restartTraining() {
               <div class="stat-label">答对题数</div>
             </div>
             <div class="stat-card">
-              <div :class="['stat-value', averageScore >= 60 ? 'good' : 'bad']">{{ averageScore }}</div>
+              <div :class="['stat-value', averageScore === '--' ? 'neutral' : (averageScore as number) >= 60 ? 'good' : 'bad']">{{ averageScore }}</div>
               <div class="stat-label">平均分</div>
             </div>
           </div>
@@ -409,7 +445,7 @@ function restartTraining() {
 }
 .setup-card {
   width: 100%;
-  max-width: 540px;
+  max-width: 720px;
   background: rgba(13,21,41,0.8);
   border: 1px solid rgba(99,179,237,0.12);
   border-radius: 20px;
@@ -461,33 +497,85 @@ function restartTraining() {
   box-shadow: 0 0 12px rgba(79,172,254,0.15);
 }
 
-.count-section { margin-bottom: 0; }
-.count-options {
+.bottom-options {
   display: flex;
-  gap: 8px;
+  gap: 16px;
 }
-.count-btn {
+.count-section, .ai-section {
   flex: 1;
-  padding: 9px 0;
-  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ai-status { font-weight: 600; }
+.ai-status.on  { color: #4facfe; }
+.ai-status.off { color: #4a5568; }
+
+.ai-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  background: rgba(255,255,255,0.04);
   border: 1px solid rgba(99,179,237,0.18);
-  background: rgba(255,255,255,0.03);
-  color: #718096;
-  font-size: 0.875rem;
+  border-radius: 8px;
   cursor: pointer;
-  transition: all 0.18s ease;
+  transition: all 0.2s ease;
+  text-align: left;
 }
-.count-btn:hover { border-color: rgba(79,172,254,0.45); color: #90cdf4; background: rgba(79,172,254,0.07); }
-.count-btn.selected {
-  background: linear-gradient(135deg, rgba(79,172,254,0.2), rgba(0,212,255,0.12));
-  border-color: rgba(79,172,254,0.5);
-  color: #4facfe;
-  font-weight: 600;
-  box-shadow: 0 0 12px rgba(79,172,254,0.15);
+.ai-toggle:hover { border-color: rgba(79,172,254,0.35); background: rgba(79,172,254,0.05); }
+.ai-toggle.active { border-color: rgba(79,172,254,0.4); background: rgba(79,172,254,0.08); }
+
+.toggle-track {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.1);
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  flex-shrink: 0;
+  transition: background 0.2s ease;
+  position: relative;
 }
+.ai-toggle.active .toggle-track { background: linear-gradient(90deg, #4facfe, #00d4ff); }
+
+.toggle-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  transition: transform 0.2s ease;
+}
+.ai-toggle.active .toggle-thumb { transform: translateX(16px); }
+
+.toggle-label { font-size: 0.82rem; color: #718096; }
+.ai-toggle.active .toggle-label { color: #90cdf4; }
+
+.score-badge.no-score { color: #4a5568; font-size: 1.4rem; }
+.count-input {
+  width: 100%;
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(99,179,237,0.18);
+  border-radius: 8px;
+  color: #e2e8f0;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.count-input:focus {
+  border-color: rgba(79,172,254,0.45);
+  box-shadow: 0 0 0 3px rgba(79,172,254,0.08);
+}
+.count-input::placeholder { color: #4a5568; }
+.count-input::-webkit-inner-spin-button,
+.count-input::-webkit-outer-spin-button { opacity: 0.4; }
 
 .start-btn {
   width: 100%;
+  margin-top: 8px;
   padding: 14px;
   border: none;
   border-radius: 12px;
@@ -527,7 +615,7 @@ function restartTraining() {
 
 .interview-content {
   padding: 28px 32px 40px;
-  max-width: 760px;
+  max-width: 1040px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -748,7 +836,7 @@ textarea:disabled { opacity: 0.5; }
 .summary-page { display: flex; justify-content: center; }
 .summary-content {
   width: 100%;
-  max-width: 780px;
+  max-width: 1040px;
   padding: 36px 32px 60px;
   display: flex;
   flex-direction: column;

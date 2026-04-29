@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -9,6 +9,36 @@ import QuestionTraining from "./components/QuestionTraining.vue";
 const currentView = ref<'training' | 'mock_interview'>('training');
 const isImporting = ref(false);
 const progress = ref({ current: 0, total: 0, message: "", is_finished: false });
+
+// ── 设置面板 ──
+const showSettings = ref(false);
+const apiKey = ref("");
+const apiUrl = ref("https://zenmux.ai/api/v1/chat/completions");
+const settingsSaving = ref(false);
+const settingsMsg = ref("");
+
+onMounted(async () => {
+  try {
+    const cfg: any = await invoke("get_api_config");
+    apiKey.value = cfg.api_key;
+    apiUrl.value = cfg.api_url;
+  } catch (e) {
+    console.error("加载配置失败", e);
+  }
+});
+
+async function saveSettings() {
+  settingsSaving.value = true;
+  settingsMsg.value = "";
+  try {
+    await invoke("set_api_config", { apiKey: apiKey.value, apiUrl: apiUrl.value });
+    settingsMsg.value = "✅ 已保存";
+  } catch (e) {
+    settingsMsg.value = `❌ ${e}`;
+  } finally {
+    settingsSaving.value = false;
+  }
+}
 
 async function handleImport() {
   const selected = await open({
@@ -73,6 +103,37 @@ async function handleImport() {
           <span>{{ isImporting ? '⏳' : '📁' }}</span>
           <span>{{ isImporting ? '导入中...' : '导入题库' }}</span>
         </button>
+
+        <button class="settings-btn" @click="showSettings = !showSettings">
+          <span>⚙️</span>
+          <span>API 设置</span>
+          <span :class="['api-dot', apiKey ? 'configured' : 'missing']"></span>
+        </button>
+
+        <Transition name="settings">
+          <div v-if="showSettings" class="settings-panel">
+            <div class="settings-label">API Key</div>
+            <input
+              v-model="apiKey"
+              type="password"
+              class="settings-input"
+              placeholder="sk-..."
+            />
+            <div class="settings-label" style="margin-top:10px">API URL</div>
+            <input
+              v-model="apiUrl"
+              type="text"
+              class="settings-input"
+              placeholder="https://..."
+            />
+            <div class="settings-footer">
+              <span class="settings-msg">{{ settingsMsg }}</span>
+              <button class="settings-save-btn" @click="saveSettings" :disabled="settingsSaving">
+                {{ settingsSaving ? '保存中...' : '保存' }}
+              </button>
+            </div>
+          </div>
+        </Transition>
       </div>
     </aside>
 
@@ -260,6 +321,94 @@ body, html {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.settings-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  background: transparent;
+  border: 1px solid rgba(99,179,237,0.12);
+  border-radius: 10px;
+  color: #718096;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+.settings-btn:hover {
+  background: rgba(79,172,254,0.06);
+  border-color: rgba(79,172,254,0.3);
+  color: #90cdf4;
+}
+.api-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.api-dot.configured { background: #68d391; box-shadow: 0 0 6px rgba(104,211,145,0.6); }
+.api-dot.missing    { background: #fc8181; box-shadow: 0 0 6px rgba(252,129,129,0.5); }
+
+.settings-panel {
+  margin-top: 10px;
+  padding: 14px;
+  background: rgba(8,13,24,0.8);
+  border: 1px solid rgba(99,179,237,0.15);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-label {
+  font-size: 0.7rem;
+  color: #4a5568;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.settings-input {
+  width: 100%;
+  padding: 7px 10px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(99,179,237,0.18);
+  border-radius: 7px;
+  color: #e2e8f0;
+  font-size: 0.8rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.settings-input:focus {
+  border-color: rgba(79,172,254,0.45);
+}
+.settings-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+.settings-msg {
+  font-size: 0.75rem;
+  color: #68d391;
+}
+.settings-save-btn {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #4facfe, #00d4ff);
+  color: #080d18;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.settings-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.settings-enter-active, .settings-leave-active { transition: all 0.2s ease; }
+.settings-enter-from, .settings-leave-to { opacity: 0; transform: translateY(-6px); }
 
 /* ===== 主内容区 ===== */
 .main-content {

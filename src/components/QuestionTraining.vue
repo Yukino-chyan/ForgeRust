@@ -24,6 +24,7 @@ interface TrainingResult {
   userAnswer: string;
   evaluation: AiResponse;
   timeSpent: number;
+  skipped: boolean;
 }
 
 const tags = ref<string[]>([]);
@@ -54,7 +55,6 @@ const multiAnswers = ref<string[]>([]);
 const aiResult = ref<AiResponse | null>(null);
 const isLoading = ref(false);
 const trainingResults = ref<TrainingResult[]>([]);
-const skippedCount = ref(0);
 
 // ── 退出确认 ──
 const showExitConfirm = ref(false);
@@ -110,18 +110,20 @@ const progress = computed(() =>
 );
 
 const totalCount   = computed(() => trainingResults.value.length);
+const skippedCount = computed(() => trainingResults.value.filter(r => r.skipped).length);
+const attemptedResults = computed(() => trainingResults.value); // 跳过题算0分，全部参与统计
 const correctCount = computed(() =>
-  trainingResults.value.filter(r => {
+  attemptedResults.value.filter(r => {
     if (r.evaluation.score === -1) return false;
     return r.evaluation.is_correct !== null ? r.evaluation.is_correct : r.evaluation.score >= 60;
   }).length
 );
-const scoredResults = computed(() => trainingResults.value.filter(r => r.evaluation.score !== -1));
-const averageScore = computed(() => {
+const scoredResults = computed(() => attemptedResults.value.filter(r => r.evaluation.score >= 0));
+const averageScore  = computed(() => {
   if (scoredResults.value.length === 0) return '--';
   return Math.round(scoredResults.value.reduce((a, r) => a + r.evaluation.score, 0) / scoredResults.value.length);
 });
-const accuracyRate = computed(() =>
+const accuracyRate  = computed(() =>
   totalCount.value === 0 ? 0 : Math.round((correctCount.value / totalCount.value) * 100)
 );
 
@@ -150,7 +152,6 @@ async function startInterview() {
     multiAnswers.value = [];
     aiResult.value = null;
     trainingResults.value = [];
-    skippedCount.value = 0;
     showExitConfirm.value = false;
     appState.value = 'interview';
     startTimer();
@@ -173,7 +174,7 @@ async function startEvaluation() {
       score: -1,
     };
     aiResult.value = result;
-    trainingResults.value.push({ question: q, userAnswer: userAnswer.value, evaluation: result, timeSpent: stopTimer() });
+    trainingResults.value.push({ question: q, userAnswer: userAnswer.value, evaluation: result, timeSpent: stopTimer(), skipped: false });
     return;
   }
 
@@ -189,6 +190,7 @@ async function startEvaluation() {
       userAnswer: userAnswer.value,
       evaluation: result,
       timeSpent: stopTimer(),
+      skipped: false,
     });
   } catch (error) {
     alert(`系统内部调用报错: ${error}`);
@@ -198,8 +200,21 @@ async function startEvaluation() {
 }
 
 function skipQuestion() {
-  skippedCount.value++;
-  stopTimer();
+  const q = currentQuestion.value;
+  const spent = stopTimer();
+  trainingResults.value.push({
+    question: q,
+    userAnswer: '',
+    evaluation: {
+      standard_answer: q.standard_answer,
+      explanation: q.explanation,
+      is_correct: false,
+      ai_comment: '',
+      score: 0,
+    },
+    timeSpent: spent,
+    skipped: true,
+  });
   if (currentIndex.value < questionList.value.length - 1) {
     currentIndex.value++;
     userAnswer.value = "";
@@ -238,7 +253,6 @@ function restartTraining() {
   appState.value = 'setup';
   selectedTags.value = [];
   trainingResults.value = [];
-  skippedCount.value = 0;
   userAnswer.value = "";
   multiAnswers.value = [];
   aiResult.value = null;
@@ -497,15 +511,14 @@ function restartTraining() {
             <div
               v-for="(r, idx) in trainingResults" :key="idx"
               :class="['result-item',
+                r.skipped ? 'item-skipped' :
                 (r.evaluation.is_correct === true || (r.evaluation.is_correct === null && r.evaluation.score >= 60))
                   ? 'item-correct' : 'item-wrong'
               ]"
             >
               <div class="item-left">
                 <span class="item-num">{{ idx + 1 }}</span>
-                <span class="item-status">
-                  {{ (r.evaluation.is_correct === true || (r.evaluation.is_correct === null && r.evaluation.score >= 60)) ? '✅' : '❌' }}
-                </span>
+                <span class="item-status">{{ r.skipped ? '⏭' : (r.evaluation.is_correct === true || (r.evaluation.is_correct === null && r.evaluation.score >= 60)) ? '✅' : '❌' }}</span>
               </div>
 
               <div class="item-body">
@@ -513,9 +526,19 @@ function restartTraining() {
                 <div class="item-tags">
                   <span class="itag">{{ r.question.tags }}</span>
                   <span class="itag">{{ typeLabel(r.question.question_type) }}</span>
+                  <span v-if="r.skipped" class="itag itag-skipped">已跳过</span>
                 </div>
+
+                <!-- 跳过：只展示标准答案供参考 -->
+                <div v-if="r.skipped" class="item-answers-essay">
+                  <div class="essay-block std-ans-block">
+                    <span class="essay-label">标准答案（供参考）</span>
+                    <p>{{ r.question.standard_answer }}</p>
+                  </div>
+                </div>
+
                 <!-- 选择题：单行展示 -->
-                <div v-if="r.evaluation.is_correct !== null" class="item-answers">
+                <div v-else-if="r.evaluation.is_correct !== null" class="item-answers">
                   <span class="your-ans">你的答案：{{ r.userAnswer }}</span>
                   <span v-if="r.evaluation.is_correct === false" class="std-ans">
                     正确答案：{{ r.evaluation.standard_answer }}
@@ -1162,6 +1185,8 @@ textarea:disabled { opacity: 0.5; }
 }
 .item-correct { border-color: rgba(104,211,145,0.2); border-left-color: #68d391; }
 .item-wrong   { border-color: rgba(252,129,129,0.15); border-left-color: #fc8181; }
+.item-skipped { border-color: rgba(113,128,150,0.15); border-left-color: #4a5568; opacity: 0.75; }
+.itag-skipped { background: rgba(113,128,150,0.15) !important; color: #718096 !important; border-color: rgba(113,128,150,0.2) !important; }
 
 .item-left { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 28px; }
 .item-num  { font-size: 0.7rem; color: #4a5568; }

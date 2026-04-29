@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, provide } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -26,6 +26,9 @@ onMounted(async () => {
     console.error("加载配置失败", e);
   }
 });
+
+// 将 apiKey 响应式地注入给子组件，保存后子组件自动感知
+provide("apiKey", apiKey);
 
 async function saveSettings() {
   settingsSaving.value = true;

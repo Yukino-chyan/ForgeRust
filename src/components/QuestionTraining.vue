@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, inject, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
 interface AiResponse {
@@ -26,9 +26,16 @@ interface TrainingResult {
 }
 
 const tags = ref<string[]>([]);
+const tagCounts = ref<Record<string, number>>({});
+const injectedApiKey = inject<ReturnType<typeof ref<string>>>("apiKey");
+const hasApiKey = computed(() => !!injectedApiKey?.value?.trim());
+
 onMounted(async () => {
   try {
-    tags.value = await invoke("get_all_tags");
+    [tags.value, tagCounts.value] = await Promise.all([
+      invoke<string[]>("get_all_tags"),
+      invoke<Record<string, number>>("get_tag_counts"),
+    ]);
   } catch (e) {
     console.error("加载标签失败", e);
   }
@@ -52,6 +59,17 @@ const canSubmit = computed(() => {
   if (currentQuestion.value.question_type === 'MULTI') return multiAnswers.value.length > 0;
   return !!userAnswer.value;
 });
+
+// 考虑实际库存后的真实预期题数
+const expectedCount = computed(() =>
+  selectedTags.value.reduce((sum, tag) =>
+    sum + Math.min(countPerTag.value, tagCounts.value[tag] ?? 0), 0)
+);
+
+// 库存不足的考点
+const insufficientTags = computed(() =>
+  selectedTags.value.filter(tag => (tagCounts.value[tag] ?? 0) < countPerTag.value)
+);
 
 const currentQuestion = computed(() => questionList.value[currentIndex.value]);
 const currentOptions = computed(() => {
@@ -81,6 +99,13 @@ const accuracyRate = computed(() =>
 
 const difficultyLabel = (d: number) => ['', '入门', '简单', '中等', '困难', '专家'][d] ?? '未知';
 const typeLabel = (t: string) => ({ SINGLE: '单选', MULTI: '多选', ESSAY: '简答' }[t] ?? t);
+
+// 兼容 "A. xxx" / "A、xxx" / "A) xxx" / "(A) xxx" 等多种格式
+function parseOption(opt: string): { letter: string; text: string } {
+  const match = opt.match(/^[（(]?([A-Za-z])[)）.、。：:\s]+(.+)$/s);
+  if (match) return { letter: match[1].toUpperCase(), text: match[2].trim() };
+  return { letter: opt.charAt(0).toUpperCase(), text: opt.slice(1).trimStart() };
+}
 
 function toggleTag(tag: string) {
   const i = selectedTags.value.indexOf(tag);
@@ -184,7 +209,10 @@ function restartTraining() {
                 v-for="tag in tags" :key="tag"
                 :class="['tag-btn', { selected: selectedTags.includes(tag) }]"
                 @click="toggleTag(tag)"
-              >{{ tag }}</button>
+              >
+                <span>{{ tag }}</span>
+                <span class="tag-count-badge">{{ tagCounts[tag] ?? 0 }}</span>
+              </button>
             </div>
           </div>
 
@@ -192,7 +220,7 @@ function restartTraining() {
             <div class="count-section">
               <div class="section-label">
                 <span>每个考点题数</span>
-                <span class="tag-count">共约 {{ selectedTags.length * countPerTag }} 道题</span>
+                <span class="tag-count">实际约 {{ expectedCount }} 道题</span>
               </div>
               <input
                 type="number"
@@ -218,13 +246,24 @@ function restartTraining() {
             </div>
           </div>
 
+          <div v-if="useAI && !hasApiKey" class="api-warning">
+            ⚠️ 已开启 AI 点评，但尚未配置 API Key。请点击左侧「API 设置」填写后再开始。
+          </div>
+
+          <div v-if="insufficientTags.length > 0" class="insufficient-warning">
+            ⚠️ 以下考点题目数量不足，将按实际库存出题：
+            <span v-for="tag in insufficientTags" :key="tag" class="insufficient-tag">
+              {{ tag }}（共 {{ tagCounts[tag] }} 题）
+            </span>
+          </div>
+
           <button
             class="start-btn"
             @click="startInterview"
-            :disabled="selectedTags.length === 0"
+            :disabled="selectedTags.length === 0 || (useAI && !hasApiKey) || expectedCount === 0"
           >
             <span>开始训练</span>
-            <span v-if="selectedTags.length" class="start-hint">约 {{ selectedTags.length * countPerTag }} 道题</span>
+            <span v-if="selectedTags.length" class="start-hint">{{ expectedCount }} 道题</span>
           </button>
         </div>
       </div>
@@ -262,14 +301,14 @@ function restartTraining() {
               <label
                 v-for="opt in currentOptions" :key="opt"
                 :class="['option-item', {
-                  'selected': userAnswer === opt.charAt(0),
+                  'selected': userAnswer === parseOption(opt).letter,
                   'disabled': !!aiResult
                 }]"
               >
-                <input type="radio" name="single" :value="opt.charAt(0)" v-model="userAnswer"
+                <input type="radio" name="single" :value="parseOption(opt).letter" v-model="userAnswer"
                   :disabled="isLoading || !!aiResult" />
-                <span class="opt-letter">{{ opt.charAt(0) }}</span>
-                <span class="opt-text">{{ opt.slice(3) }}</span>
+                <span class="opt-letter">{{ parseOption(opt).letter }}</span>
+                <span class="opt-text">{{ parseOption(opt).text }}</span>
               </label>
             </div>
 
@@ -279,14 +318,14 @@ function restartTraining() {
               <label
                 v-for="opt in currentOptions" :key="opt"
                 :class="['option-item', {
-                  'selected': multiAnswers.includes(opt.charAt(0)),
+                  'selected': multiAnswers.includes(parseOption(opt).letter),
                   'disabled': !!aiResult
                 }]"
               >
-                <input type="checkbox" :value="opt.charAt(0)" v-model="multiAnswers"
+                <input type="checkbox" :value="parseOption(opt).letter" v-model="multiAnswers"
                   :disabled="isLoading || !!aiResult" />
-                <span class="opt-letter">{{ opt.charAt(0) }}</span>
-                <span class="opt-text">{{ opt.slice(3) }}</span>
+                <span class="opt-letter">{{ parseOption(opt).letter }}</span>
+                <span class="opt-text">{{ parseOption(opt).text }}</span>
               </label>
             </div>
 
@@ -392,12 +431,26 @@ function restartTraining() {
                   <span class="itag">{{ r.question.tags }}</span>
                   <span class="itag">{{ typeLabel(r.question.question_type) }}</span>
                 </div>
-                <div class="item-answers">
+                <!-- 选择题：单行展示 -->
+                <div v-if="r.evaluation.is_correct !== null" class="item-answers">
                   <span class="your-ans">你的答案：{{ r.userAnswer }}</span>
                   <span v-if="r.evaluation.is_correct === false" class="std-ans">
                     正确答案：{{ r.evaluation.standard_answer }}
                   </span>
                 </div>
+
+                <!-- 简答题：块级展示，始终显示标准答案 -->
+                <div v-else class="item-answers-essay">
+                  <div class="essay-block your-ans-block">
+                    <span class="essay-label">你的回答</span>
+                    <p>{{ r.userAnswer }}</p>
+                  </div>
+                  <div class="essay-block std-ans-block">
+                    <span class="essay-label">标准答案</span>
+                    <p>{{ r.evaluation.standard_answer }}</p>
+                  </div>
+                </div>
+
                 <p class="item-comment">{{ r.evaluation.ai_comment }}</p>
               </div>
 
@@ -488,7 +541,22 @@ function restartTraining() {
   cursor: pointer;
   transition: all 0.18s ease;
 }
+.tag-btn { display: inline-flex; align-items: center; gap: 6px; }
 .tag-btn:hover { border-color: rgba(79,172,254,0.45); color: #90cdf4; background: rgba(79,172,254,0.07); }
+.tag-count-badge {
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(99,179,237,0.12);
+  color: #4a5568;
+  font-weight: 600;
+  min-width: 18px;
+  text-align: center;
+}
+.tag-btn.selected .tag-count-badge {
+  background: rgba(79,172,254,0.2);
+  color: #4facfe;
+}
 .tag-btn.selected {
   background: linear-gradient(135deg, rgba(79,172,254,0.2), rgba(0,212,255,0.12));
   border-color: rgba(79,172,254,0.5);
@@ -572,6 +640,38 @@ function restartTraining() {
 .count-input::placeholder { color: #4a5568; }
 .count-input::-webkit-inner-spin-button,
 .count-input::-webkit-outer-spin-button { opacity: 0.4; }
+
+.insufficient-warning {
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(246,173,85,0.08);
+  border: 1px solid rgba(246,173,85,0.25);
+  color: #f6ad55;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.insufficient-tag {
+  padding: 1px 8px;
+  border-radius: 5px;
+  background: rgba(246,173,85,0.15);
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.api-warning {
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(252,129,129,0.08);
+  border: 1px solid rgba(252,129,129,0.25);
+  color: #fc8181;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  margin-top: 4px;
+}
 
 .start-btn {
   width: 100%;
@@ -919,6 +1019,16 @@ textarea:disabled { opacity: 0.5; }
 .item-answers { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
 .your-ans { font-size: 0.8rem; color: #718096; }
 .std-ans  { font-size: 0.8rem; color: #fc8181; font-weight: 600; }
+
+.item-answers-essay { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.essay-block { border-radius: 6px; padding: 8px 10px; }
+.essay-label { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; display: block; margin-bottom: 3px; }
+.your-ans-block { background: rgba(255,255,255,0.03); border: 1px solid rgba(99,179,237,0.1); }
+.your-ans-block .essay-label { color: #4a5568; }
+.your-ans-block p { font-size: 0.8rem; color: #718096; line-height: 1.5; }
+.std-ans-block { background: rgba(104,211,145,0.05); border: 1px solid rgba(104,211,145,0.15); }
+.std-ans-block .essay-label { color: #68d391; }
+.std-ans-block p { font-size: 0.8rem; color: #9ae6b4; line-height: 1.5; }
 .item-comment { font-size: 0.8rem; color: #4a5568; line-height: 1.5; }
 
 .item-score {

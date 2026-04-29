@@ -21,7 +21,7 @@ async fn call_api(
 
     let client = Client::new();
     let request_body = json!({
-        "model": "deepseek/deepseek-chat",
+        "model": "deepseek-chat",
         "messages": [
             { "role": "system", "content": system_prompt },
             { "role": "user",   "content": user_prompt   }

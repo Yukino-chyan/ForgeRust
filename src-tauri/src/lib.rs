@@ -324,6 +324,27 @@ async fn get_all_tags(
     Ok(tags)
 }
 
+#[tauri::command]
+async fn get_tag_counts(
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<std::collections::HashMap<String, usize>, String> {
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT tags FROM questions")
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| format!("查询标签失败: {}", e))?;
+
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (tags_str,) in rows {
+        for tag in tags_str.split(',') {
+            let t = tag.trim().to_string();
+            if !t.is_empty() {
+                *counts.entry(t).or_insert(0) += 1;
+            }
+        }
+    }
+    Ok(counts)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -358,6 +379,7 @@ pub fn run() {
             evaluate_answer,
             import_questions_from_file,
             get_all_tags,
+            get_tag_counts,
             get_api_config,
             set_api_config,
         ])

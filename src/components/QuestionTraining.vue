@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, inject, onMounted, onUnmounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import Icon from "./ui/Icon.vue";
 
 interface AiResponse {
-  standard_answer: string
-  explanation: string
-  is_correct: boolean | null
-  ai_comment: string
-  score: number
+  standard_answer: string;
+  explanation: string;
+  is_correct: boolean | null;
+  ai_comment: string;
+  score: number;
 }
 interface Question {
   id: number;
@@ -28,62 +29,80 @@ interface TrainingResult {
   manuallyAdded: boolean;
 }
 
-const props = defineProps<{ wrongPracticeIds?: number[] }>();
+const props = defineProps<{ wrongPracticeIds?: number[]; isActive?: boolean }>();
 const emit = defineEmits<{
   consumed: [];
-  stateChange: [state: 'setup' | 'interview' | 'summary'];
+  stateChange: [state: "setup" | "interview" | "summary"];
 }>();
 
-// ── 所有 ref 在任何 watch 之前声明，避免 TDZ ──
 const hasPending = !!(props.wrongPracticeIds && props.wrongPracticeIds.length > 0);
-const appState    = ref<'setup' | 'interview' | 'summary'>(hasPending ? 'interview' : 'setup');
+const appState = ref<"setup" | "interview" | "summary">(hasPending ? "interview" : "setup");
 const isPreloading = ref(hasPending);
 
-const sessionSaved   = ref(false);
-const selectedTags   = ref<string[]>([]);
-const countPerTag    = ref(2);
-const useAI          = ref(true);
-const questionList   = ref<Question[]>([]);
-const currentIndex   = ref(0);
-const userAnswer     = ref("");
-const multiAnswers   = ref<string[]>([]);
-const aiResult       = ref<AiResponse | null>(null);
-const isLoading      = ref(false);
+const sessionSaved = ref(false);
+const selectedTags = ref<string[]>([]);
+const countPerTag = ref(2);
+const useAI = ref(true);
+const questionList = ref<Question[]>([]);
+const currentIndex = ref(0);
+const userAnswer = ref("");
+const multiAnswers = ref<string[]>([]);
+const aiResult = ref<AiResponse | null>(null);
+const isLoading = ref(false);
 const trainingResults = ref<TrainingResult[]>([]);
 const showExitConfirm = ref(false);
 
-const tags       = ref<string[]>([]);
-const tagCounts  = ref<Record<string, number>>({});
+const tags = ref<string[]>([]);
+const tagCounts = ref<Record<string, number>>({});
 const injectedApiKey = inject<ReturnType<typeof ref<string>>>("apiKey");
-const hasApiKey  = computed(() => !!injectedApiKey?.value?.trim());
+const hasApiKey = computed(() => !!injectedApiKey?.value?.trim());
 
-// appState 变化时通知父组件
-watch(appState, s => emit('stateChange', s), { immediate: true });
+watch(appState, (s) => emit("stateChange", s), { immediate: true });
 
-// 错题本触发练习：prop 有值时立即进入 interview（状态已在上方同步初始化）
-watch(() => props.wrongPracticeIds, async (ids) => {
-  if (!ids || ids.length === 0) return;
-  currentIndex.value = 0;
-  userAnswer.value = "";
-  multiAnswers.value = [];
-  aiResult.value = null;
-  trainingResults.value = [];
-  showExitConfirm.value = false;
-  sessionSaved.value = false;
-  questionList.value = [];
-  appState.value = 'interview';
-  isPreloading.value = true;
-  startTimer();
-  try {
-    questionList.value = await invoke<Question[]>("generate_interview_from_ids", { questionIds: ids });
-    emit('consumed');
-  } catch (e) {
-    appState.value = 'setup';
-    alert(e);
-  } finally {
-    isPreloading.value = false;
+watch(
+  () => props.isActive,
+  async (active) => {
+    if (!active && appState.value === "summary") saveTrainingSession();
+    if (active && appState.value === "setup") {
+      try {
+        [tags.value, tagCounts.value] = await Promise.all([
+          invoke<string[]>("get_all_tags"),
+          invoke<Record<string, number>>("get_tag_counts"),
+        ]);
+      } catch (e) {
+        console.error("刷新标签失败", e);
+      }
+    }
   }
-}, { immediate: true });
+);
+
+watch(
+  () => props.wrongPracticeIds,
+  async (ids) => {
+    if (!ids || ids.length === 0) return;
+    currentIndex.value = 0;
+    userAnswer.value = "";
+    multiAnswers.value = [];
+    aiResult.value = null;
+    trainingResults.value = [];
+    showExitConfirm.value = false;
+    sessionSaved.value = false;
+    questionList.value = [];
+    appState.value = "interview";
+    isPreloading.value = true;
+    startTimer();
+    try {
+      questionList.value = await invoke<Question[]>("generate_interview_from_ids", { questionIds: ids });
+      emit("consumed");
+    } catch (e) {
+      appState.value = "setup";
+      alert(e);
+    } finally {
+      isPreloading.value = false;
+    }
+  },
+  { immediate: true }
+);
 
 onMounted(async () => {
   try {
@@ -96,91 +115,103 @@ onMounted(async () => {
   }
 });
 
-// ── 计时器 ──
 const elapsedSeconds = ref(0);
 let timerInterval: ReturnType<typeof setInterval> | null = null;
 
 const formattedTime = computed(() => {
   const m = Math.floor(elapsedSeconds.value / 60);
   const s = elapsedSeconds.value % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
+  return `${m}:${s.toString().padStart(2, "0")}`;
 });
 
 function startTimer() {
   elapsedSeconds.value = 0;
   if (timerInterval) clearInterval(timerInterval);
-  timerInterval = setInterval(() => { elapsedSeconds.value++; }, 1000);
+  timerInterval = setInterval(() => {
+    elapsedSeconds.value++;
+  }, 1000);
 }
 
 function stopTimer(): number {
-  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
   return elapsedSeconds.value;
 }
 
 onUnmounted(() => {
   if (timerInterval) clearInterval(timerInterval);
-  // 用户在 summary 页切换侧边栏时，组件卸载前保存
-  if (appState.value === 'summary') saveTrainingSession();
 });
 
 const canSubmit = computed(() => {
   if (!currentQuestion.value) return false;
-  if (currentQuestion.value.question_type === 'MULTI') return multiAnswers.value.length > 0;
+  if (currentQuestion.value.question_type === "MULTI") return multiAnswers.value.length > 0;
   return !!userAnswer.value;
 });
 
-// 考虑实际库存后的真实预期题数
 const expectedCount = computed(() =>
-  selectedTags.value.reduce((sum, tag) =>
-    sum + Math.min(countPerTag.value, tagCounts.value[tag] ?? 0), 0)
+  selectedTags.value.reduce(
+    (sum, tag) => sum + Math.min(countPerTag.value, tagCounts.value[tag] ?? 0),
+    0
+  )
 );
 
-// 库存不足的考点
 const insufficientTags = computed(() =>
-  selectedTags.value.filter(tag => (tagCounts.value[tag] ?? 0) < countPerTag.value)
+  selectedTags.value.filter((tag) => (tagCounts.value[tag] ?? 0) < countPerTag.value)
 );
 
 const currentQuestion = computed(() => questionList.value[currentIndex.value]);
 const currentOptions = computed(() => {
   if (!currentQuestion.value || !currentQuestion.value.options) return [];
-  try { return JSON.parse(currentQuestion.value.options); }
-  catch (e) { return []; }
+  try {
+    return JSON.parse(currentQuestion.value.options);
+  } catch (e) {
+    return [];
+  }
 });
 const progress = computed(() =>
-  questionList.value.length ? Math.round(((currentIndex.value) / questionList.value.length) * 100) : 0
+  questionList.value.length
+    ? Math.round((currentIndex.value / questionList.value.length) * 100)
+    : 0
 );
 
-const totalCount   = computed(() => trainingResults.value.length);
-const skippedCount = computed(() => trainingResults.value.filter(r => r.skipped).length);
-const attemptedResults = computed(() => trainingResults.value); // 跳过题算0分，全部参与统计
-const correctCount = computed(() =>
-  attemptedResults.value.filter(r => {
-    if (r.evaluation.score === -1) return false;
-    return r.evaluation.is_correct !== null ? r.evaluation.is_correct : r.evaluation.score >= 60;
-  }).length
+const totalCount = computed(() => trainingResults.value.length);
+const skippedCount = computed(() => trainingResults.value.filter((r) => r.skipped).length);
+const attemptedResults = computed(() => trainingResults.value);
+const correctCount = computed(
+  () =>
+    attemptedResults.value.filter((r) => {
+      if (r.evaluation.score === -1) return false;
+      return r.evaluation.is_correct !== null
+        ? r.evaluation.is_correct
+        : r.evaluation.score >= 60;
+    }).length
 );
-const scoredResults = computed(() => attemptedResults.value.filter(r => r.evaluation.score >= 0));
-const averageScore  = computed(() => {
-  if (scoredResults.value.length === 0) return '--';
-  return Math.round(scoredResults.value.reduce((a, r) => a + r.evaluation.score, 0) / scoredResults.value.length);
+const scoredResults = computed(() =>
+  attemptedResults.value.filter((r) => r.evaluation.score >= 0)
+);
+const averageScore = computed(() => {
+  if (scoredResults.value.length === 0) return "—";
+  return Math.round(
+    scoredResults.value.reduce((a, r) => a + r.evaluation.score, 0) / scoredResults.value.length
+  );
 });
-const accuracyRate  = computed(() =>
+const accuracyRate = computed(() =>
   totalCount.value === 0 ? 0 : Math.round((correctCount.value / totalCount.value) * 100)
 );
 
-const difficultyLabel = (d: number) => ['', '入门', '简单', '中等', '困难', '专家'][d] ?? '未知';
-const typeLabel = (t: string) => ({ SINGLE: '单选', MULTI: '多选', ESSAY: '简答' }[t] ?? t);
+const difficultyLabel = (d: number) => ["", "入门", "简单", "中等", "困难", "专家"][d] ?? "—";
+const typeLabel = (t: string) => ({ SINGLE: "单选", MULTI: "多选", ESSAY: "简答" }[t] ?? t);
 
-// 兼容 "A. xxx" / "A、xxx" / "A) xxx" / "(A) xxx" 等多种格式
 function parseOption(opt: string): { letter: string; text: string } {
   const match = opt.match(/^[（(]?([A-Za-z])[)）.、。：:\s]+(.+)$/s);
   if (match) return { letter: match[1].toUpperCase(), text: match[2].trim() };
   return { letter: opt.charAt(0).toUpperCase(), text: opt.slice(1).trimStart() };
 }
 
-// 当前题对应的答题结果（提交后才有）
 const currentResult = computed(() =>
-  trainingResults.value.find(r => r.question.id === currentQuestion.value?.id)
+  trainingResults.value.find((r) => r.question.id === currentQuestion.value?.id)
 );
 
 function toggleManualMark() {
@@ -193,7 +224,7 @@ async function saveTrainingSession() {
   sessionSaved.value = true;
   try {
     await invoke("save_training_session", {
-      records: trainingResults.value.map(r => ({
+      records: trainingResults.value.map((r) => ({
         question_id: r.question.id,
         user_answer: r.userAnswer,
         score: r.evaluation.score,
@@ -216,9 +247,12 @@ function toggleTag(tag: string) {
 }
 
 async function startInterview() {
-  if (selectedTags.value.length === 0) return alert("请至少选择一个考点！");
+  if (selectedTags.value.length === 0) return alert("请至少选择一个考点。");
   try {
-    questionList.value = await invoke("generate_interview", { tags: selectedTags.value, count: countPerTag.value });
+    questionList.value = await invoke("generate_interview", {
+      tags: selectedTags.value,
+      count: countPerTag.value,
+    });
     currentIndex.value = 0;
     userAnswer.value = "";
     multiAnswers.value = [];
@@ -226,18 +260,20 @@ async function startInterview() {
     trainingResults.value = [];
     showExitConfirm.value = false;
     sessionSaved.value = false;
-    appState.value = 'interview';
+    appState.value = "interview";
     startTimer();
-  } catch (error) { alert(error); }
+  } catch (error) {
+    alert(error);
+  }
 }
 
 async function startEvaluation() {
-  if (currentQuestion.value?.question_type === 'MULTI') {
-    userAnswer.value = [...multiAnswers.value].sort().join(',');
+  if (currentQuestion.value?.question_type === "MULTI") {
+    userAnswer.value = [...multiAnswers.value].sort().join(",");
   }
-  if (!userAnswer.value) return alert("请先给出你的答案！");
+  if (!userAnswer.value) return alert("请先给出你的答案。");
 
-  if (!useAI.value && currentQuestion.value?.question_type === 'ESSAY') {
+  if (!useAI.value && currentQuestion.value?.question_type === "ESSAY") {
     const q = currentQuestion.value;
     const result: AiResponse = {
       standard_answer: q.standard_answer,
@@ -247,7 +283,14 @@ async function startEvaluation() {
       score: -1,
     };
     aiResult.value = result;
-    trainingResults.value.push({ question: q, userAnswer: userAnswer.value, evaluation: result, timeSpent: stopTimer(), skipped: false, manuallyAdded: false });
+    trainingResults.value.push({
+      question: q,
+      userAnswer: userAnswer.value,
+      evaluation: result,
+      timeSpent: stopTimer(),
+      skipped: false,
+      manuallyAdded: false,
+    });
     return;
   }
 
@@ -255,7 +298,7 @@ async function startEvaluation() {
   try {
     const result: AiResponse = await invoke("evaluate_answer", {
       questionId: currentQuestion.value.id,
-      userAnswer: userAnswer.value
+      userAnswer: userAnswer.value,
     });
     aiResult.value = result;
     trainingResults.value.push({
@@ -278,12 +321,12 @@ function skipQuestion() {
   const spent = stopTimer();
   trainingResults.value.push({
     question: q,
-    userAnswer: '',
+    userAnswer: "",
     evaluation: {
       standard_answer: q.standard_answer,
       explanation: q.explanation,
       is_correct: false,
-      ai_comment: '',
+      ai_comment: "",
       score: 0,
     },
     timeSpent: spent,
@@ -297,7 +340,7 @@ function skipQuestion() {
     aiResult.value = null;
     startTimer();
   } else {
-    appState.value = 'summary';
+    appState.value = "summary";
   }
 }
 
@@ -309,24 +352,22 @@ function nextQuestion() {
     aiResult.value = null;
     startTimer();
   } else {
-    appState.value = 'summary';
+    appState.value = "summary";
   }
 }
 
 function exitTraining() {
   showExitConfirm.value = true;
 }
-
 function confirmExit() {
   stopTimer();
   showExitConfirm.value = false;
   restartTraining();
 }
-
 function restartTraining() {
-  saveTrainingSession(); // summary 页点"再来一套"时保存，sessionSaved 防重复
+  saveTrainingSession();
   stopTimer();
-  appState.value = 'setup';
+  appState.value = "setup";
   selectedTags.value = [];
   trainingResults.value = [];
   userAnswer.value = "";
@@ -334,355 +375,441 @@ function restartTraining() {
   aiResult.value = null;
   showExitConfirm.value = false;
 }
+
+function isCorrectish(r: TrainingResult): boolean {
+  if (r.skipped) return false;
+  if (r.evaluation.is_correct !== null) return r.evaluation.is_correct;
+  return r.evaluation.score >= 60;
+}
+
+function formatTime(sec: number) {
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+}
 </script>
 
 <template>
-  <div class="training-container">
-
-    <!-- ===== Setup 页 ===== -->
+  <div class="training-root">
+    <!-- ───── Setup 页 ───── -->
     <Transition name="page">
-      <div v-if="appState === 'setup'" class="page setup-page" key="setup">
-        <div class="setup-card">
-          <div class="setup-header">
-            <h1 class="setup-title">题库专项训练</h1>
-            <p class="setup-subtitle">选择考点，AI 将为你生成专项练习并实时点评</p>
-          </div>
+      <section v-if="appState === 'setup'" class="page setup" key="setup">
+        <div class="setup-card fr-card">
+          <header class="setup-head">
+            <h1>题库专项训练</h1>
+            <p>选择考点，按数量生成本次训练。</p>
+          </header>
 
-          <div class="tag-section">
-            <div class="section-label">
-              <span>选择考点</span>
-              <span v-if="selectedTags.length" class="tag-count">已选 {{ selectedTags.length }} 个</span>
+          <div class="block">
+            <div class="block-head">
+              <span class="block-label">选择考点</span>
+              <span v-if="selectedTags.length" class="block-aside">
+                已选 <strong class="fr-mono">{{ selectedTags.length }}</strong> 个
+              </span>
             </div>
             <div class="tag-grid">
               <button
-                v-for="tag in tags" :key="tag"
-                :class="['tag-btn', { selected: selectedTags.includes(tag) }]"
+                v-for="tag in tags"
+                :key="tag"
+                :class="['tag-pill', { active: selectedTags.includes(tag) }]"
                 @click="toggleTag(tag)"
               >
                 <span>{{ tag }}</span>
-                <span class="tag-count-badge">{{ tagCounts[tag] ?? 0 }}</span>
+                <span class="tag-count fr-mono">{{ tagCounts[tag] ?? 0 }}</span>
               </button>
             </div>
           </div>
 
-          <div class="bottom-options">
-            <div class="count-section">
-              <div class="section-label">
-                <span>每个考点题数</span>
-                <span class="tag-count">实际约 {{ expectedCount }} 道题</span>
+          <div class="grid-2">
+            <div class="block">
+              <div class="block-head">
+                <span class="block-label">每个考点题数</span>
+                <span class="block-aside">
+                  实际约 <strong class="fr-mono">{{ expectedCount }}</strong> 题
+                </span>
               </div>
               <input
                 type="number"
-                class="count-input"
+                class="fr-input"
                 v-model.number="countPerTag"
                 min="1"
                 max="20"
-                placeholder="输入题目数量"
               />
             </div>
 
-            <div class="ai-section">
-              <div class="section-label">
-                <span>AI 点评</span>
-                <span :class="['ai-status', useAI ? 'on' : 'off']">{{ useAI ? '已开启' : '已关闭' }}</span>
+            <div class="block">
+              <div class="block-head">
+                <span class="block-label">AI 点评</span>
+                <span :class="['block-aside', useAI ? 'ok' : 'off']">
+                  {{ useAI ? "已开启" : "已关闭" }}
+                </span>
               </div>
-              <button :class="['ai-toggle', { active: useAI }]" @click="useAI = !useAI">
+              <button :class="['toggle', { on: useAI }]" @click="useAI = !useAI">
                 <span class="toggle-track">
                   <span class="toggle-thumb"></span>
                 </span>
-                <span class="toggle-label">{{ useAI ? '简答题将由 AI 评分' : '仅展示标准答案' }}</span>
+                <span class="toggle-text">
+                  {{ useAI ? "简答题将由 AI 评分" : "仅展示标准答案" }}
+                </span>
               </button>
             </div>
           </div>
 
-          <div v-if="useAI && !hasApiKey" class="api-warning">
-            ⚠️ 已开启 AI 点评，但尚未配置 API Key。请点击左侧「API 设置」填写后再开始。
+          <div v-if="useAI && !hasApiKey" class="notice notice-danger">
+            <Icon name="AlertTriangle" :size="14" />
+            <span>已开启 AI 点评，但尚未配置 API Key。请到「设置」中填写。</span>
           </div>
 
-          <div v-if="insufficientTags.length > 0" class="insufficient-warning">
-            ⚠️ 以下考点题目数量不足，将按实际库存出题：
-            <span v-for="tag in insufficientTags" :key="tag" class="insufficient-tag">
-              {{ tag }}（共 {{ tagCounts[tag] }} 题）
+          <div v-if="insufficientTags.length > 0" class="notice notice-warning">
+            <Icon name="AlertCircle" :size="14" />
+            <span>
+              以下考点题目数量不足，将按实际库存出题：
+              <span v-for="tag in insufficientTags" :key="tag" class="insufficient-tag">
+                {{ tag }}（{{ tagCounts[tag] }} 题）
+              </span>
             </span>
           </div>
 
           <button
-            class="start-btn"
-            @click="startInterview"
+            class="fr-btn fr-btn-primary start-btn"
             :disabled="selectedTags.length === 0 || (useAI && !hasApiKey) || expectedCount === 0"
+            @click="startInterview"
           >
+            <Icon name="Play" :size="14" />
             <span>开始训练</span>
-            <span v-if="selectedTags.length" class="start-hint">{{ expectedCount }} 道题</span>
+            <span v-if="selectedTags.length" class="start-hint">
+              · <span class="fr-mono">{{ expectedCount }}</span> 题
+            </span>
           </button>
         </div>
-      </div>
+      </section>
     </Transition>
 
-    <!-- ===== 答题页 ===== -->
+    <!-- ───── 答题页 ───── -->
     <Transition name="page">
-      <div v-if="appState === 'interview'" class="page interview-page" key="interview">
-
-        <!-- 顶部进度条 -->
-        <div class="progress-bar-wrap">
-          <div class="progress-bar" :style="{ width: progress + '%' }"></div>
+      <section v-if="appState === 'interview'" class="page interview" key="interview">
+        <div class="progress-track">
+          <div class="progress-fill" :style="{ width: progress + '%' }"></div>
         </div>
 
-        <!-- 退出确认条 -->
-        <Transition name="exit-confirm">
-          <div v-if="showExitConfirm" class="exit-confirm-bar">
+        <Transition name="confirm">
+          <div v-if="showExitConfirm" class="exit-bar">
             <span>确定退出本次训练？已答记录将丢失。</span>
-            <div class="exit-confirm-actions">
-              <button class="exit-cancel-btn" @click="showExitConfirm = false">继续训练</button>
-              <button class="exit-ok-btn" @click="confirmExit">确定退出</button>
+            <div class="exit-actions">
+              <button class="fr-btn fr-btn-ghost" @click="showExitConfirm = false">继续训练</button>
+              <button class="fr-btn fr-btn-danger" @click="confirmExit">确定退出</button>
             </div>
           </div>
         </Transition>
 
-        <!-- 错题重练加载中 -->
-        <div v-if="isPreloading" class="preload-screen">
-          <span class="preload-dot">.</span><span class="preload-dot">.</span><span class="preload-dot">.</span>
+        <div v-if="isPreloading" class="preload">
+          <Icon name="Loader2" :size="20" class="spin" />
           <p>题目加载中</p>
         </div>
 
-        <div v-else class="interview-content">
-          <!-- 题号 & 元信息 -->
-          <div class="question-meta">
-            <span class="q-index">{{ currentIndex + 1 }} / {{ questionList.length }}</span>
-            <span class="q-tag">{{ currentQuestion?.tags }}</span>
-            <span class="q-type">{{ typeLabel(currentQuestion?.question_type) }}</span>
-            <span :class="['q-diff', `diff-${currentQuestion?.difficulty}`]">
+        <div v-else class="iv-content">
+          <div class="iv-meta">
+            <span class="iv-index fr-mono">
+              {{ currentIndex + 1 }} / {{ questionList.length }}
+            </span>
+            <span class="fr-chip fr-chip-accent">{{ currentQuestion?.tags }}</span>
+            <span class="fr-chip">{{ typeLabel(currentQuestion?.question_type) }}</span>
+            <span class="fr-chip iv-diff">
               {{ difficultyLabel(currentQuestion?.difficulty) }}
             </span>
-            <span class="q-timer">⏱ {{ formattedTime }}</span>
-            <button class="exit-btn" @click="exitTraining">退出</button>
+            <span class="iv-timer fr-mono">
+              <Icon name="Clock" :size="13" />
+              {{ formattedTime }}
+            </span>
+            <button class="iv-exit" @click="exitTraining">
+              <Icon name="X" :size="14" />
+              <span>退出</span>
+            </button>
           </div>
 
-          <!-- 题目内容 -->
-          <div class="question-card">
-            <p class="question-text">{{ currentQuestion?.content }}</p>
+          <div class="fr-card q-card">
+            <p class="q-text">{{ currentQuestion?.content }}</p>
           </div>
 
-          <!-- 答题区 -->
-          <div class="answer-card">
-            <!-- 单选 -->
-            <div v-if="currentQuestion?.question_type === 'SINGLE'" class="options-list">
+          <div class="fr-card a-card">
+            <div v-if="currentQuestion?.question_type === 'SINGLE'" class="options">
               <label
-                v-for="opt in currentOptions" :key="opt"
-                :class="['option-item', {
-                  'selected': userAnswer === parseOption(opt).letter,
-                  'disabled': !!aiResult
+                v-for="opt in currentOptions"
+                :key="opt"
+                :class="['option', {
+                  selected: userAnswer === parseOption(opt).letter,
+                  disabled: !!aiResult,
                 }]"
               >
-                <input type="radio" name="single" :value="parseOption(opt).letter" v-model="userAnswer"
-                  :disabled="isLoading || !!aiResult" />
-                <span class="opt-letter">{{ parseOption(opt).letter }}</span>
+                <input
+                  type="radio"
+                  name="single"
+                  :value="parseOption(opt).letter"
+                  v-model="userAnswer"
+                  :disabled="isLoading || !!aiResult"
+                />
+                <span class="opt-letter fr-mono">{{ parseOption(opt).letter }}</span>
                 <span class="opt-text">{{ parseOption(opt).text }}</span>
               </label>
             </div>
 
-            <!-- 多选 -->
-            <div v-else-if="currentQuestion?.question_type === 'MULTI'" class="options-list">
+            <div v-else-if="currentQuestion?.question_type === 'MULTI'" class="options">
               <p class="multi-hint">多选题 · 请选择所有正确选项</p>
               <label
-                v-for="opt in currentOptions" :key="opt"
-                :class="['option-item', {
-                  'selected': multiAnswers.includes(parseOption(opt).letter),
-                  'disabled': !!aiResult
+                v-for="opt in currentOptions"
+                :key="opt"
+                :class="['option', {
+                  selected: multiAnswers.includes(parseOption(opt).letter),
+                  disabled: !!aiResult,
                 }]"
               >
-                <input type="checkbox" :value="parseOption(opt).letter" v-model="multiAnswers"
-                  :disabled="isLoading || !!aiResult" />
-                <span class="opt-letter">{{ parseOption(opt).letter }}</span>
+                <input
+                  type="checkbox"
+                  :value="parseOption(opt).letter"
+                  v-model="multiAnswers"
+                  :disabled="isLoading || !!aiResult"
+                />
+                <span class="opt-letter fr-mono">{{ parseOption(opt).letter }}</span>
                 <span class="opt-text">{{ parseOption(opt).text }}</span>
               </label>
             </div>
 
-            <!-- 简答 -->
             <div v-else-if="currentQuestion?.question_type === 'ESSAY'">
               <textarea
                 v-model="userAnswer"
                 placeholder="请详细阐述你的回答..."
                 :disabled="isLoading || !!aiResult"
+                class="essay-input"
               ></textarea>
             </div>
 
-            <div class="answer-actions">
+            <div class="a-actions">
               <button
-                class="skip-btn"
-                @click="skipQuestion"
+                class="fr-btn fr-btn-ghost"
                 :disabled="isLoading || !!aiResult"
-              >跳过此题</button>
-              <button
-                class="submit-btn"
-                @click="startEvaluation"
-                :disabled="isLoading || !canSubmit || !!aiResult"
+                @click="skipQuestion"
               >
-                <span v-if="isLoading" class="loading-dots">批阅中<span>.</span><span>.</span><span>.</span></span>
-                <span v-else>提交回答</span>
+                跳过此题
+              </button>
+              <button
+                class="fr-btn fr-btn-primary"
+                :disabled="isLoading || !canSubmit || !!aiResult"
+                @click="startEvaluation"
+              >
+                <Icon v-if="isLoading" name="Loader2" :size="14" class="spin" />
+                <Icon v-else name="Check" :size="14" />
+                <span>{{ isLoading ? "批阅中..." : "提交回答" }}</span>
               </button>
             </div>
           </div>
 
-          <!-- 评阅结果 -->
           <Transition name="result">
-            <div v-if="aiResult" class="result-card">
-              <div class="result-score-row">
-                <div v-if="aiResult.score !== -1" :class="['score-badge', aiResult.score >= 60 ? 'pass' : 'fail']">
-                  {{ aiResult.score }}
+            <div v-if="aiResult" class="fr-card result-card">
+              <div class="result-top">
+                <div
+                  v-if="aiResult.score !== -1"
+                  :class="['score-badge', aiResult.score >= 60 ? 'pass' : 'fail']"
+                >
+                  <span class="score-num fr-mono">{{ aiResult.score }}</span>
                   <span class="score-unit">分</span>
                 </div>
-                <div v-else class="score-badge no-score">未评分</div>
-                <div v-if="aiResult.is_correct !== null" :class="['verdict', aiResult.is_correct ? 'correct' : 'wrong']">
-                  {{ aiResult.is_correct ? '✅ 回答正确' : '❌ 回答错误' }}
+                <div v-else class="score-badge score-na">未评分</div>
+
+                <div
+                  v-if="aiResult.is_correct !== null"
+                  :class="['verdict', aiResult.is_correct ? 'correct' : 'wrong']"
+                >
+                  <Icon :name="aiResult.is_correct ? 'CheckCircle2' : 'XCircle'" :size="16" />
+                  <span>{{ aiResult.is_correct ? "回答正确" : "回答错误" }}</span>
                 </div>
               </div>
 
-              <div class="result-section ai-comment">
-                <div class="result-section-label">AI 点评</div>
-                <p>{{ aiResult.ai_comment }}</p>
+              <div class="result-section">
+                <div class="rs-label">AI 点评</div>
+                <p class="rs-text">{{ aiResult.ai_comment }}</p>
               </div>
 
-              <div class="result-section std-answer">
-                <div class="result-section-label">📌 标准答案</div>
-                <p>{{ aiResult.standard_answer }}</p>
+              <div class="result-section">
+                <div class="rs-label">标准答案</div>
+                <p class="rs-text">{{ aiResult.standard_answer }}</p>
               </div>
 
-              <div class="result-section explanation">
-                <div class="result-section-label">📖 解析</div>
-                <p>{{ aiResult.explanation }}</p>
+              <div class="result-section">
+                <div class="rs-label">解析</div>
+                <p class="rs-text">{{ aiResult.explanation }}</p>
               </div>
 
               <div class="result-actions">
                 <button
-                  :class="['mark-btn', { marked: currentResult?.manuallyAdded }]"
+                  :class="['fr-btn', currentResult?.manuallyAdded ? 'fr-btn-primary' : 'fr-btn-ghost']"
                   @click="toggleManualMark"
                 >
-                  {{ currentResult?.manuallyAdded ? '✅ 已加入错题本' : '📌 加入错题本' }}
+                  <Icon
+                    :name="currentResult?.manuallyAdded ? 'BookmarkCheck' : 'Bookmark'"
+                    :size="14"
+                  />
+                  <span>
+                    {{ currentResult?.manuallyAdded ? "已加入错题本" : "加入错题本" }}
+                  </span>
                 </button>
-                <button class="next-btn" @click="nextQuestion">
-                  {{ currentIndex < questionList.length - 1 ? '下一题 →' : '查看报告 →' }}
+                <button class="fr-btn fr-btn-primary" @click="nextQuestion">
+                  <span>
+                    {{ currentIndex < questionList.length - 1 ? "下一题" : "查看报告" }}
+                  </span>
+                  <Icon name="ArrowRight" :size="14" />
                 </button>
               </div>
             </div>
           </Transition>
         </div>
-      </div>
+      </section>
     </Transition>
 
-    <!-- ===== 总结页 ===== -->
+    <!-- ───── 总结页 ───── -->
     <Transition name="page">
-      <div v-if="appState === 'summary'" class="page summary-page" key="summary">
-        <div class="summary-content">
-          <div class="summary-header">
+      <section v-if="appState === 'summary'" class="page summary" key="summary">
+        <div class="sm-wrap">
+          <header class="sm-head">
             <div>
               <h2>训练完成</h2>
-              <p>本次共 {{ totalCount }} 道题，以下是你的表现</p>
+              <p>本次共 {{ totalCount }} 道题，以下是你的表现。</p>
             </div>
-            <button class="mark-all-btn" @click="trainingResults.forEach(r => r.manuallyAdded = true)">
-              📌 全部加入错题本
-            </button>
-          </div>
-
-          <div class="stat-cards">
-            <div class="stat-card">
-              <div :class="['stat-value', accuracyRate >= 60 ? 'good' : 'bad']">{{ accuracyRate }}<span class="stat-unit">%</span></div>
-              <div class="stat-label">正确率</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-value neutral">{{ correctCount }}<span class="stat-unit">/{{ totalCount }}</span></div>
-              <div class="stat-label">答对题数</div>
-            </div>
-            <div class="stat-card">
-              <div :class="['stat-value', averageScore === '--' ? 'neutral' : (averageScore as number) >= 60 ? 'good' : 'bad']">{{ averageScore }}</div>
-              <div class="stat-label">平均分</div>
-            </div>
-            <div class="stat-card">
-              <div :class="['stat-value', skippedCount > 0 ? 'bad' : 'good']">{{ skippedCount }}</div>
-              <div class="stat-label">跳过题数</div>
-            </div>
-          </div>
-
-          <div class="result-list">
-            <div
-              v-for="(r, idx) in trainingResults" :key="idx"
-              :class="['result-item',
-                r.skipped ? 'item-skipped' :
-                (r.evaluation.is_correct === true || (r.evaluation.is_correct === null && r.evaluation.score >= 60))
-                  ? 'item-correct' : 'item-wrong'
-              ]"
+            <button
+              class="fr-btn fr-btn-ghost"
+              @click="trainingResults.forEach(r => r.manuallyAdded = true)"
             >
-              <div class="item-left">
-                <span class="item-num">{{ idx + 1 }}</span>
-                <span class="item-status">{{ r.skipped ? '⏭' : (r.evaluation.is_correct === true || (r.evaluation.is_correct === null && r.evaluation.score >= 60)) ? '✅' : '❌' }}</span>
+              <Icon name="BookmarkPlus" :size="14" />
+              <span>全部加入错题本</span>
+            </button>
+          </header>
+
+          <div class="stats">
+            <div class="fr-card stat">
+              <div class="stat-label">正确率</div>
+              <div :class="['stat-value fr-mono', accuracyRate >= 60 ? 'good' : 'bad']">
+                {{ accuracyRate }}<span class="stat-unit">%</span>
+              </div>
+            </div>
+            <div class="fr-card stat">
+              <div class="stat-label">答对题数</div>
+              <div class="stat-value fr-mono">
+                {{ correctCount }}<span class="stat-unit">/{{ totalCount }}</span>
+              </div>
+            </div>
+            <div class="fr-card stat">
+              <div class="stat-label">平均分</div>
+              <div
+                :class="['stat-value fr-mono', averageScore === '—' ? '' : (averageScore as number) >= 60 ? 'good' : 'bad']"
+              >
+                {{ averageScore }}
+              </div>
+            </div>
+            <div class="fr-card stat">
+              <div class="stat-label">跳过题数</div>
+              <div :class="['stat-value fr-mono', skippedCount > 0 ? 'bad' : '']">
+                {{ skippedCount }}
+              </div>
+            </div>
+          </div>
+
+          <ul class="result-list">
+            <li
+              v-for="(r, idx) in trainingResults"
+              :key="idx"
+              :class="['result-row', r.skipped ? 'skipped' : isCorrectish(r) ? 'correct' : 'wrong']"
+            >
+              <div class="row-left">
+                <span class="row-num fr-mono">{{ idx + 1 }}</span>
+                <span class="row-status">
+                  <Icon
+                    v-if="r.skipped"
+                    name="SkipForward"
+                    :size="16"
+                  />
+                  <Icon
+                    v-else-if="isCorrectish(r)"
+                    name="CheckCircle2"
+                    :size="16"
+                  />
+                  <Icon v-else name="XCircle" :size="16" />
+                </span>
               </div>
 
-              <div class="item-body">
-                <p class="item-question">{{ r.question.content }}</p>
-                <div class="item-tags">
-                  <span class="itag">{{ r.question.tags }}</span>
-                  <span class="itag">{{ typeLabel(r.question.question_type) }}</span>
-                  <span v-if="r.skipped" class="itag itag-skipped">已跳过</span>
+              <div class="row-body">
+                <p class="row-q">{{ r.question.content }}</p>
+                <div class="row-meta">
+                  <span class="fr-chip fr-chip-accent">{{ r.question.tags }}</span>
+                  <span class="fr-chip">{{ typeLabel(r.question.question_type) }}</span>
+                  <span v-if="r.skipped" class="fr-chip pin">已跳过</span>
                 </div>
 
-                <!-- 跳过：只展示标准答案供参考 -->
-                <div v-if="r.skipped" class="item-answers-essay">
-                  <div class="essay-block std-ans-block">
-                    <span class="essay-label">标准答案（供参考）</span>
+                <div v-if="r.skipped" class="ans-blocks">
+                  <div class="ans-block">
+                    <div class="ans-label">标准答案（供参考）</div>
                     <p>{{ r.question.standard_answer }}</p>
                   </div>
                 </div>
 
-                <!-- 选择题：单行展示 -->
-                <div v-else-if="r.evaluation.is_correct !== null" class="item-answers">
-                  <span class="your-ans">你的答案：{{ r.userAnswer }}</span>
+                <div v-else-if="r.evaluation.is_correct !== null" class="ans-inline">
+                  <span class="your-ans">你的答案：<strong class="fr-mono">{{ r.userAnswer }}</strong></span>
                   <span v-if="r.evaluation.is_correct === false" class="std-ans">
-                    正确答案：{{ r.evaluation.standard_answer }}
+                    正确答案：<strong class="fr-mono">{{ r.evaluation.standard_answer }}</strong>
                   </span>
                 </div>
 
-                <!-- 简答题：块级展示，始终显示标准答案 -->
-                <div v-else class="item-answers-essay">
-                  <div class="essay-block your-ans-block">
-                    <span class="essay-label">你的回答</span>
+                <div v-else class="ans-blocks">
+                  <div class="ans-block">
+                    <div class="ans-label">你的回答</div>
                     <p>{{ r.userAnswer }}</p>
                   </div>
-                  <div class="essay-block std-ans-block">
-                    <span class="essay-label">标准答案</span>
+                  <div class="ans-block">
+                    <div class="ans-label">标准答案</div>
                     <p>{{ r.evaluation.standard_answer }}</p>
                   </div>
                 </div>
 
-                <p class="item-comment">{{ r.evaluation.ai_comment }}</p>
+                <p v-if="r.evaluation.ai_comment" class="row-comment">
+                  {{ r.evaluation.ai_comment }}
+                </p>
               </div>
 
-              <div class="item-score">
-                <span :class="r.evaluation.score >= 60 ? 'score-good' : 'score-bad'">{{ r.evaluation.score }}</span>
-                <span class="score-unit-sm">分</span>
-                <span class="item-time">{{ Math.floor(r.timeSpent / 60) }}:{{ String(r.timeSpent % 60).padStart(2, '0') }}</span>
+              <div class="row-right">
+                <span :class="['row-score fr-mono', r.evaluation.score >= 60 ? 'good' : 'bad']">
+                  {{ r.evaluation.score < 0 ? "—" : r.evaluation.score }}
+                </span>
+                <span class="row-time fr-mono">{{ formatTime(r.timeSpent) }}</span>
                 <button
-                  :class="['item-mark-btn', { marked: r.manuallyAdded }]"
-                  @click.stop="r.manuallyAdded = !r.manuallyAdded"
+                  class="row-mark"
                   :title="r.manuallyAdded ? '取消标记' : '加入错题本'"
-                >{{ r.manuallyAdded ? '✅' : '📌' }}</button>
+                  @click.stop="r.manuallyAdded = !r.manuallyAdded"
+                >
+                  <Icon
+                    :name="r.manuallyAdded ? 'BookmarkCheck' : 'Bookmark'"
+                    :size="14"
+                    :class="{ marked: r.manuallyAdded }"
+                  />
+                </button>
               </div>
-            </div>
+            </li>
+          </ul>
+
+          <div class="sm-actions">
+            <button class="fr-btn fr-btn-primary" @click="restartTraining">
+              <Icon name="RotateCcw" :size="14" />
+              <span>再来一套</span>
+            </button>
           </div>
-
-          <button class="restart-btn" @click="restartTraining">再来一套</button>
         </div>
-      </div>
+      </section>
     </Transition>
-
   </div>
 </template>
 
 <style scoped>
-/* ===== 容器 ===== */
-.training-container {
+.training-root {
   height: 100%;
-  overflow: hidden;
-  background: #080d18;
+  width: 100%;
   position: relative;
+  overflow: hidden;
+  background: var(--bg);
 }
 .page {
   position: absolute;
@@ -690,754 +817,590 @@ function restartTraining() {
   overflow-y: auto;
 }
 
-/* ===== 页面切换动画 ===== */
-.page-enter-active { animation: pageIn 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
-.page-leave-active { animation: pageOut 0.25s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
-@keyframes pageIn  { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+.page-enter-active { animation: pageIn var(--dur-base) var(--ease); }
+.page-leave-active { animation: pageOut var(--dur-fast) var(--ease) forwards; }
+@keyframes pageIn  { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 @keyframes pageOut { from { opacity: 1; } to { opacity: 0; } }
 
-/* ===== Setup 页 ===== */
-.setup-page {
+/* ── Setup ───────────────────── */
+.setup {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 40px 24px;
+  padding: var(--sp-12) var(--sp-6);
 }
 .setup-card {
   width: 100%;
   max-width: 720px;
-  background: rgba(13,21,41,0.8);
-  border: 1px solid rgba(99,179,237,0.12);
-  border-radius: 20px;
-  padding: 40px;
-  backdrop-filter: blur(12px);
-  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
-  animation: fadeInUp 0.4s ease;
-}
-.setup-header { text-align: center; margin-bottom: 36px; }
-.setup-title {
-  font-size: 1.9rem;
-  font-weight: 700;
-  background: linear-gradient(90deg, #4facfe, #00d4ff);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  margin-bottom: 8px;
-}
-.setup-subtitle { color: #4a5568; font-size: 0.9rem; }
-
-.tag-section { margin-bottom: 32px; }
-.section-label {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.82rem;
-  color: #718096;
-  margin-bottom: 14px;
-  font-weight: 500;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-.tag-count { color: #4facfe; }
-.tag-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-.tag-btn {
-  padding: 8px 16px;
-  border-radius: 8px;
-  border: 1px solid rgba(99,179,237,0.18);
-  background: rgba(255,255,255,0.03);
-  color: #718096;
-  font-size: 0.875rem;
-  cursor: pointer;
-  transition: all 0.18s ease;
-}
-.tag-btn { display: inline-flex; align-items: center; gap: 6px; }
-.tag-btn:hover { border-color: rgba(79,172,254,0.45); color: #90cdf4; background: rgba(79,172,254,0.07); }
-.tag-count-badge {
-  font-size: 0.68rem;
-  padding: 1px 6px;
-  border-radius: 10px;
-  background: rgba(99,179,237,0.12);
-  color: #4a5568;
-  font-weight: 600;
-  min-width: 18px;
-  text-align: center;
-}
-.tag-btn.selected .tag-count-badge {
-  background: rgba(79,172,254,0.2);
-  color: #4facfe;
-}
-.tag-btn.selected {
-  background: linear-gradient(135deg, rgba(79,172,254,0.2), rgba(0,212,255,0.12));
-  border-color: rgba(79,172,254,0.5);
-  color: #4facfe;
-  font-weight: 600;
-  box-shadow: 0 0 12px rgba(79,172,254,0.15);
-}
-
-.bottom-options {
-  display: flex;
-  gap: 16px;
-}
-.count-section, .ai-section {
-  flex: 1;
+  padding: var(--sp-8);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-6);
 }
-.ai-status { font-weight: 600; }
-.ai-status.on  { color: #4facfe; }
-.ai-status.off { color: #4a5568; }
+.setup-head h1 {
+  font-size: var(--fs-20);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.setup-head p { font-size: var(--fs-13); color: var(--text-muted); }
 
-.ai-toggle {
+.block { display: flex; flex-direction: column; gap: 10px; }
+.block-head {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 14px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(99,179,237,0.18);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  text-align: left;
+  justify-content: space-between;
+  align-items: baseline;
 }
-.ai-toggle:hover { border-color: rgba(79,172,254,0.35); background: rgba(79,172,254,0.05); }
-.ai-toggle.active { border-color: rgba(79,172,254,0.4); background: rgba(79,172,254,0.08); }
-
-.toggle-track {
-  width: 36px;
-  height: 20px;
-  border-radius: 10px;
-  background: rgba(255,255,255,0.1);
-  display: flex;
-  align-items: center;
-  padding: 2px;
-  flex-shrink: 0;
-  transition: background 0.2s ease;
-  position: relative;
+.block-label {
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  color: var(--text-muted);
 }
-.ai-toggle.active .toggle-track { background: linear-gradient(90deg, #4facfe, #00d4ff); }
-
-.toggle-thumb {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
-  transition: transform 0.2s ease;
+.block-aside {
+  font-size: var(--fs-12);
+  color: var(--text-subtle);
 }
-.ai-toggle.active .toggle-thumb { transform: translateX(16px); }
+.block-aside.ok  { color: var(--accent); }
+.block-aside.off { color: var(--text-subtle); }
+.block-aside strong { font-weight: var(--fw-semibold); color: var(--text); margin: 0 1px; }
 
-.toggle-label { font-size: 0.82rem; color: #718096; }
-.ai-toggle.active .toggle-label { color: #90cdf4; }
-
-.score-badge.no-score { color: #4a5568; font-size: 1.4rem; }
-.count-input {
-  width: 100%;
-  padding: 10px 14px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(99,179,237,0.18);
-  border-radius: 8px;
-  color: #e2e8f0;
-  font-size: 0.9rem;
-  outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-.count-input:focus {
-  border-color: rgba(79,172,254,0.45);
-  box-shadow: 0 0 0 3px rgba(79,172,254,0.08);
-}
-.count-input::placeholder { color: #4a5568; }
-.count-input::-webkit-inner-spin-button,
-.count-input::-webkit-outer-spin-button { opacity: 0.4; }
-
-.insufficient-warning {
-  padding: 10px 14px;
-  border-radius: 8px;
-  background: rgba(246,173,85,0.08);
-  border: 1px solid rgba(246,173,85,0.25);
-  color: #f6ad55;
-  font-size: 0.82rem;
-  line-height: 1.6;
-  display: flex;
-  flex-wrap: wrap;
+.tag-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-pill {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+  transition: all var(--dur-fast) var(--ease);
 }
-.insufficient-tag {
-  padding: 1px 8px;
-  border-radius: 5px;
-  background: rgba(246,173,85,0.15);
-  font-weight: 600;
-  font-size: 0.78rem;
+.tag-pill:hover:not(.active) {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.tag-pill.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+  font-weight: var(--fw-medium);
+}
+.tag-count {
+  font-size: 11px;
+  opacity: 0.7;
 }
 
-.api-warning {
-  padding: 10px 14px;
-  border-radius: 8px;
-  background: rgba(252,129,129,0.08);
-  border: 1px solid rgba(252,129,129,0.25);
-  color: #fc8181;
-  font-size: 0.82rem;
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-4);
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: var(--fs-13);
+  color: var(--text-muted);
+  transition: all var(--dur-fast) var(--ease);
+}
+.toggle:hover { border-color: var(--border-strong); }
+.toggle.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.toggle-track {
+  width: 28px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  position: relative;
+  flex-shrink: 0;
+  transition: background var(--dur-fast) var(--ease);
+}
+.toggle.on .toggle-track { background: var(--accent); }
+.toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--surface);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.toggle.on .toggle-thumb { transform: translateX(12px); }
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-13);
   line-height: 1.5;
-  margin-top: 4px;
+}
+.notice-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.notice-warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.insufficient-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 0 2px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: var(--fs-12);
+  color: var(--warning);
+  border: 1px solid var(--warning);
 }
 
 .start-btn {
   width: 100%;
-  margin-top: 8px;
-  padding: 14px;
-  border: none;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #4facfe, #00d4ff);
-  color: #080d18;
-  font-size: 1rem;
-  font-weight: 700;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  transition: all 0.2s ease;
-  box-shadow: 0 4px 20px rgba(79,172,254,0.35);
+  padding: 12px;
+  font-size: var(--fs-14);
+  font-weight: var(--fw-semibold);
 }
-.start-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 28px rgba(79,172,254,0.5);
-}
-.start-btn:disabled { background: rgba(255,255,255,0.08); color: #4a5568; cursor: not-allowed; box-shadow: none; }
-.start-hint { font-size: 0.82rem; opacity: 0.7; font-weight: 400; }
+.start-hint { opacity: 0.85; font-weight: var(--fw-regular); }
 
-/* ===== 错题重练加载占位 ===== */
-.preload-screen {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  gap: 12px;
-  color: #4a5568;
-  font-size: 0.9rem;
-}
-.preload-dot {
-  display: inline-block;
-  animation: blink 1.2s infinite;
-  opacity: 0;
-  font-size: 1.6rem;
-  line-height: 1;
-}
-.preload-dot:nth-child(2) { animation-delay: 0.2s; }
-.preload-dot:nth-child(3) { animation-delay: 0.4s; }
-
-/* ===== 答题页 ===== */
-.progress-bar-wrap {
-  height: 3px;
-  background: rgba(255,255,255,0.05);
+/* ── Interview ───────────────────── */
+.interview { display: flex; flex-direction: column; }
+.progress-track {
+  height: 2px;
+  background: var(--surface-2);
   position: sticky;
   top: 0;
   z-index: 10;
 }
-.progress-bar {
+.progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #4facfe, #00d4ff);
-  transition: width 0.4s ease;
-  box-shadow: 0 0 8px rgba(79,172,254,0.6);
+  background: var(--accent);
+  transition: width var(--dur-base) var(--ease);
 }
 
-.interview-content {
-  padding: 28px 32px 40px;
-  max-width: 1040px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.question-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.q-index { font-size: 0.8rem; color: #4a5568; font-weight: 600; }
-.q-tag, .q-type {
-  font-size: 0.72rem;
-  padding: 3px 10px;
-  border-radius: 6px;
-  background: rgba(79,172,254,0.1);
-  border: 1px solid rgba(79,172,254,0.18);
-  color: #63b3ed;
-}
-.q-diff {
-  font-size: 0.72rem;
-  padding: 3px 10px;
-  border-radius: 6px;
-}
-.diff-1, .diff-2 { background: rgba(104,211,145,0.1); border: 1px solid rgba(104,211,145,0.2); color: #68d391; }
-.diff-3         { background: rgba(246,173,85,0.1);  border: 1px solid rgba(246,173,85,0.2);  color: #f6ad55; }
-.diff-4, .diff-5 { background: rgba(252,129,129,0.1); border: 1px solid rgba(252,129,129,0.2); color: #fc8181; }
-
-.question-card {
-  background: rgba(13,21,41,0.7);
-  border: 1px solid rgba(99,179,237,0.12);
-  border-left: 3px solid #4facfe;
-  border-radius: 14px;
-  padding: 24px;
-  backdrop-filter: blur(8px);
-}
-.question-text {
-  font-size: 1.05rem;
-  color: #e2e8f0;
-  line-height: 1.7;
-  font-weight: 500;
-}
-
-.answer-card {
-  background: rgba(13,21,41,0.5);
-  border: 1px solid rgba(99,179,237,0.1);
-  border-radius: 14px;
-  padding: 20px;
-}
-
-.options-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
-.multi-hint { font-size: 0.78rem; color: #4a5568; margin-bottom: 12px; }
-
-.option-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border-radius: 10px;
-  border: 1px solid rgba(99,179,237,0.1);
-  background: rgba(255,255,255,0.02);
-  cursor: pointer;
-  transition: all 0.18s ease;
-  user-select: none;
-}
-.option-item:hover:not(.disabled) {
-  border-color: rgba(79,172,254,0.35);
-  background: rgba(79,172,254,0.06);
-}
-.option-item.selected {
-  border-color: rgba(79,172,254,0.5);
-  background: rgba(79,172,254,0.1);
-}
-.option-item.disabled { cursor: default; opacity: 0.8; }
-.option-item input { display: none; }
-.opt-letter {
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  background: rgba(99,179,237,0.1);
-  border: 1px solid rgba(99,179,237,0.2);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: #63b3ed;
-  flex-shrink: 0;
-}
-.option-item.selected .opt-letter {
-  background: linear-gradient(135deg, #4facfe, #00d4ff);
-  border-color: transparent;
-  color: #080d18;
-}
-.opt-text { font-size: 0.9rem; color: #cbd5e0; line-height: 1.4; }
-
-textarea {
-  width: 100%;
-  height: 130px;
-  padding: 14px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(99,179,237,0.15);
-  border-radius: 10px;
-  color: #e2e8f0;
-  font-size: 0.9rem;
-  resize: vertical;
-  outline: none;
-  font-family: inherit;
-  transition: border-color 0.2s;
-  margin-bottom: 16px;
-}
-textarea:focus { border-color: rgba(79,172,254,0.4); box-shadow: 0 0 0 3px rgba(79,172,254,0.08); }
-textarea:disabled { opacity: 0.5; }
-
-/* ===== 退出确认条 ===== */
-.exit-confirm-bar {
+.exit-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 32px;
-  background: rgba(252,129,129,0.1);
-  border-bottom: 1px solid rgba(252,129,129,0.2);
-  font-size: 0.875rem;
-  color: #fc8181;
-  gap: 16px;
+  padding: 10px var(--sp-6);
+  background: var(--warning-soft);
+  border-bottom: 1px solid var(--warning);
+  font-size: var(--fs-13);
+  color: var(--warning);
 }
-.exit-confirm-actions { display: flex; gap: 8px; }
-.exit-cancel-btn {
-  padding: 6px 16px;
-  border-radius: 7px;
-  border: 1px solid rgba(99,179,237,0.25);
-  background: transparent;
-  color: #90cdf4;
-  font-size: 0.82rem;
-  cursor: pointer;
-  transition: all 0.18s;
-}
-.exit-cancel-btn:hover { background: rgba(79,172,254,0.1); }
-.exit-ok-btn {
-  padding: 6px 16px;
-  border-radius: 7px;
-  border: none;
-  background: rgba(252,129,129,0.2);
-  color: #fc8181;
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.18s;
-}
-.exit-ok-btn:hover { background: rgba(252,129,129,0.35); }
-.exit-confirm-enter-active, .exit-confirm-leave-active { transition: all 0.2s ease; }
-.exit-confirm-enter-from, .exit-confirm-leave-to { opacity: 0; transform: translateY(-8px); }
+.exit-actions { display: flex; gap: 8px; }
+.confirm-enter-active, .confirm-leave-active { transition: all var(--dur-base) var(--ease); }
+.confirm-enter-from, .confirm-leave-to { opacity: 0; transform: translateY(-6px); }
 
-/* ===== 计时器 & 退出按钮（题号行） ===== */
-.q-timer {
-  margin-left: auto;
-  font-size: 0.78rem;
-  color: #4a5568;
-  font-variant-numeric: tabular-nums;
-}
-.exit-btn {
-  padding: 4px 12px;
-  border-radius: 6px;
-  border: 1px solid rgba(252,129,129,0.25);
-  background: transparent;
-  color: #718096;
-  font-size: 0.75rem;
-  cursor: pointer;
-  transition: all 0.18s;
-  flex-shrink: 0;
-}
-.exit-btn:hover { border-color: rgba(252,129,129,0.5); color: #fc8181; background: rgba(252,129,129,0.08); }
-
-/* ===== 答题操作行（跳过 + 提交） ===== */
-.answer-actions {
-  display: flex;
-  gap: 10px;
-}
-.skip-btn {
-  padding: 12px 20px;
-  border: 1px solid rgba(99,179,237,0.15);
-  border-radius: 10px;
-  background: transparent;
-  color: #4a5568;
-  font-size: 0.875rem;
-  cursor: pointer;
-  transition: all 0.18s;
-  white-space: nowrap;
-}
-.skip-btn:hover:not(:disabled) { border-color: rgba(99,179,237,0.35); color: #718096; }
-.skip-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-
-/* ===== 每题用时（总结页） ===== */
-.item-time {
-  font-size: 0.68rem;
-  color: #4a5568;
-  margin-top: 2px;
-  font-variant-numeric: tabular-nums;
-}
-
-.submit-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  flex: 1;
-  padding: 12px;
-  border: none;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #4facfe, #00d4ff);
-  color: #080d18;
-  font-size: 0.95rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: 0 4px 16px rgba(79,172,254,0.3);
-}
-.submit-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 24px rgba(79,172,254,0.45); }
-.submit-btn:disabled { background: rgba(255,255,255,0.06); color: #4a5568; cursor: not-allowed; box-shadow: none; }
-
-/* 批阅中动画 */
-.loading-dots span {
-  animation: blink 1.2s infinite;
-  opacity: 0;
-}
-.loading-dots span:nth-child(2) { animation-delay: 0.2s; }
-.loading-dots span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes blink { 0%,80%,100% { opacity: 0; } 40% { opacity: 1; } }
-
-/* ===== 评阅结果 ===== */
-.result-enter-active { animation: resultIn 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
-@keyframes resultIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
-
-.result-card {
-  background: rgba(13,21,41,0.7);
-  border: 1px solid rgba(99,179,237,0.12);
-  border-radius: 14px;
-  padding: 24px;
+.preload {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  padding: var(--sp-12);
+  color: var(--text-muted);
+  font-size: var(--fs-13);
 }
-.result-score-row {
+
+.iv-content {
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+  padding: var(--sp-6) var(--sp-6) var(--sp-12);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.iv-meta {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.iv-index {
+  font-size: var(--fs-13);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.iv-diff { color: var(--warning); }
+.iv-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-12);
+  color: var(--text-muted);
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.iv-exit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-12);
+  color: var(--text-subtle);
+  transition: all var(--dur-fast) var(--ease);
+}
+.iv-exit:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.q-card {
+  padding: var(--sp-6);
+}
+.q-text {
+  font-size: var(--fs-16);
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.a-card {
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.options { display: flex; flex-direction: column; gap: 8px; }
+.multi-hint {
+  font-size: var(--fs-12);
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 10px var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+.option:hover:not(.disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+.option.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.option.disabled { cursor: default; opacity: 0.85; }
+.option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.opt-letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.option.selected .opt-letter {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+.opt-text {
+  font-size: var(--fs-14);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.essay-input {
+  width: 100%;
+  min-height: 160px;
+  padding: var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: var(--fs-14);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.essay-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.essay-input::placeholder { color: var(--text-subtle); }
+
+.a-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Result */
+.result-card {
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.result-enter-active, .result-leave-active { transition: all var(--dur-base) var(--ease); }
+.result-enter-from, .result-leave-to { opacity: 0; transform: translateY(8px); }
+
+.result-top {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
 }
 .score-badge {
-  font-size: 2.2rem;
-  font-weight: 800;
-  line-height: 1;
-  display: flex;
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  font-weight: var(--fw-semibold);
+  display: inline-flex;
   align-items: baseline;
-  gap: 4px;
+  gap: 2px;
 }
-.score-badge.pass { color: #68d391; text-shadow: 0 0 20px rgba(104,211,145,0.4); }
-.score-badge.fail { color: #fc8181; text-shadow: 0 0 20px rgba(252,129,129,0.4); }
-.score-unit { font-size: 1rem; font-weight: 400; }
-.verdict { font-size: 0.9rem; font-weight: 600; }
-.verdict.correct { color: #68d391; }
-.verdict.wrong   { color: #fc8181; }
+.score-badge.pass { background: var(--success-soft); color: var(--success); }
+.score-badge.fail { background: var(--danger-soft);  color: var(--danger); }
+.score-badge.score-na { background: var(--surface-2); color: var(--text-subtle); font-weight: var(--fw-regular); }
+.score-num { font-size: var(--fs-20); }
+.score-unit { font-size: var(--fs-12); font-weight: var(--fw-regular); }
 
-.result-section { display: flex; flex-direction: column; gap: 8px; }
-.result-section-label {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: #4a5568;
+.verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+}
+.verdict.correct { color: var(--success); }
+.verdict.wrong   { color: var(--danger); }
+
+.result-section {
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-3);
+}
+.result-section:first-of-type { border-top: none; padding-top: 0; }
+.rs-label {
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
 }
-.ai-comment p { color: #cbd5e0; font-size: 0.9rem; line-height: 1.65; }
-.std-answer {
-  background: rgba(104,211,145,0.06);
-  border: 1px solid rgba(104,211,145,0.18);
-  border-radius: 10px;
-  padding: 14px;
+.rs-text {
+  font-size: var(--fs-13);
+  color: var(--text);
+  line-height: 1.65;
 }
-.std-answer p { color: #9ae6b4; font-size: 0.88rem; line-height: 1.7; }
-.explanation {
-  background: rgba(79,172,254,0.05);
-  border: 1px solid rgba(79,172,254,0.15);
-  border-radius: 10px;
-  padding: 14px;
-}
-.explanation p { color: #90cdf4; font-size: 0.88rem; line-height: 1.7; }
 
 .result-actions {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  gap: 10px;
-}
-.mark-btn {
-  padding: 8px 16px;
-  border-radius: 8px;
-  border: 1px dashed rgba(246,173,85,0.4);
-  background: transparent;
-  color: #f6ad55;
-  font-size: 0.82rem;
-  cursor: pointer;
-  transition: all 0.18s;
-}
-.mark-btn:hover { background: rgba(246,173,85,0.08); border-color: rgba(246,173,85,0.7); }
-.mark-btn.marked {
-  border-style: solid;
-  background: rgba(104,211,145,0.08);
-  border-color: rgba(104,211,145,0.4);
-  color: #68d391;
+  gap: 8px;
 }
 
-.next-btn {
-  align-self: flex-end;
-  padding: 10px 24px;
-  border: 1px solid rgba(79,172,254,0.3);
-  border-radius: 8px;
-  background: rgba(79,172,254,0.1);
-  color: #4facfe;
-  font-size: 0.9rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.18s ease;
+/* ── Summary ───────────────────── */
+.summary { padding: var(--sp-6); }
+.sm-wrap {
+  max-width: var(--content-max);
+  margin: 0 auto;
 }
-.next-btn:hover { background: rgba(79,172,254,0.2); box-shadow: 0 0 16px rgba(79,172,254,0.2); }
-
-/* ===== 总结页 ===== */
-.summary-page { display: flex; justify-content: center; }
-.summary-content {
-  width: 100%;
-  max-width: 1040px;
-  padding: 36px 32px 60px;
+.sm-head {
   display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-.summary-header {
-  display: flex;
+  justify-content: space-between;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
 }
-.summary-header h2 {
-  font-size: 1.8rem;
-  font-weight: 700;
-  background: linear-gradient(90deg, #4facfe, #00d4ff);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  margin-bottom: 6px;
+.sm-head h2 {
+  font-size: var(--fs-20);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  margin-bottom: 4px;
 }
-.summary-header p { color: #4a5568; font-size: 0.9rem; }
+.sm-head p { font-size: var(--fs-13); color: var(--text-muted); }
 
-.stat-cards { display: flex; gap: 14px; }
-.stat-card {
-  flex: 1;
-  background: rgba(13,21,41,0.7);
-  border: 1px solid rgba(99,179,237,0.12);
-  border-radius: 16px;
-  padding: 24px 16px;
-  text-align: center;
-  backdrop-filter: blur(8px);
-  animation: fadeInUp 0.4s ease both;
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
 }
-.stat-card:nth-child(2) { animation-delay: 0.08s; }
-.stat-card:nth-child(3) { animation-delay: 0.16s; }
+.stat {
+  padding: var(--sp-4) var(--sp-6);
+}
+.stat-label {
+  font-size: var(--fs-12);
+  color: var(--text-muted);
+  margin-bottom: var(--sp-2);
+}
 .stat-value {
-  font-size: 2.4rem;
-  font-weight: 800;
-  line-height: 1;
-  margin-bottom: 8px;
+  font-size: var(--fs-28);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  line-height: 1.1;
 }
-.stat-value.good    { color: #68d391; text-shadow: 0 0 20px rgba(104,211,145,0.3); }
-.stat-value.bad     { color: #fc8181; text-shadow: 0 0 20px rgba(252,129,129,0.3); }
-.stat-value.neutral { color: #4facfe; }
-.stat-unit { font-size: 1rem; font-weight: 400; }
-.stat-label { font-size: 0.8rem; color: #4a5568; font-weight: 500; }
-
-.result-list { display: flex; flex-direction: column; gap: 10px; }
-.result-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  padding: 16px;
-  border-radius: 12px;
-  border: 1px solid transparent;
-  background: rgba(13,21,41,0.5);
-  border-left-width: 3px;
-  animation: fadeInUp 0.3s ease both;
+.stat-value.good { color: var(--success); }
+.stat-value.bad  { color: var(--danger); }
+.stat-unit {
+  font-size: var(--fs-14);
+  font-weight: var(--fw-regular);
+  color: var(--text-subtle);
+  margin-left: 2px;
 }
-.item-correct { border-color: rgba(104,211,145,0.2); border-left-color: #68d391; }
-.item-wrong   { border-color: rgba(252,129,129,0.15); border-left-color: #fc8181; }
-.item-skipped { border-color: rgba(113,128,150,0.15); border-left-color: #4a5568; opacity: 0.75; }
-.itag-skipped { background: rgba(113,128,150,0.15) !important; color: #718096 !important; border-color: rgba(113,128,150,0.2) !important; }
 
-.item-left { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 28px; }
-.item-num  { font-size: 0.7rem; color: #4a5568; }
-.item-status { font-size: 1rem; }
-
-.item-body { flex: 1; min-width: 0; }
-.item-question {
-  font-size: 0.9rem;
-  color: #e2e8f0;
-  font-weight: 500;
-  margin-bottom: 6px;
+.result-list {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.item-tags { display: flex; gap: 6px; margin-bottom: 6px; }
-.itag {
-  font-size: 0.68rem;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: rgba(99,179,237,0.08);
-  color: #4a5568;
-  border: 1px solid rgba(99,179,237,0.12);
+.result-row {
+  display: grid;
+  grid-template-columns: 56px 1fr auto;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-6);
+  border-bottom: 1px solid var(--border);
 }
-.item-answers { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
-.your-ans { font-size: 0.8rem; color: #718096; }
-.std-ans  { font-size: 0.8rem; color: #fc8181; font-weight: 600; }
+.result-row:last-child { border-bottom: none; }
+.result-row.correct .row-status { color: var(--success); }
+.result-row.wrong   .row-status { color: var(--danger); }
+.result-row.skipped .row-status { color: var(--text-subtle); }
 
-.item-answers-essay { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
-.essay-block { border-radius: 6px; padding: 8px 10px; }
-.essay-label { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; display: block; margin-bottom: 3px; }
-.your-ans-block { background: rgba(255,255,255,0.03); border: 1px solid rgba(99,179,237,0.1); }
-.your-ans-block .essay-label { color: #4a5568; }
-.your-ans-block p { font-size: 0.8rem; color: #718096; line-height: 1.5; }
-.std-ans-block { background: rgba(104,211,145,0.05); border: 1px solid rgba(104,211,145,0.15); }
-.std-ans-block .essay-label { color: #68d391; }
-.std-ans-block p { font-size: 0.8rem; color: #9ae6b4; line-height: 1.5; }
-.item-comment { font-size: 0.8rem; color: #4a5568; line-height: 1.5; }
-
-.item-score {
+.row-left {
   display: flex;
   flex-direction: column;
   align-items: center;
-  min-width: 44px;
+  gap: 4px;
 }
-.score-good { font-size: 1.5rem; font-weight: 800; color: #68d391; }
-.score-bad  { font-size: 1.5rem; font-weight: 800; color: #fc8181; }
-.score-unit-sm { font-size: 0.7rem; color: #4a5568; }
-
-.mark-all-btn {
-  padding: 10px 20px;
-  border-radius: 10px;
-  border: 1px solid rgba(246,173,85,0.35);
-  background: rgba(246,173,85,0.08);
-  color: #f6ad55;
-  font-size: 0.85rem;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.2s;
-  flex-shrink: 0;
-  align-self: flex-start;
+.row-num {
+  font-size: var(--fs-12);
+  color: var(--text-subtle);
 }
-.mark-all-btn:hover { background: rgba(246,173,85,0.18); border-color: rgba(246,173,85,0.6); }
 
-.item-mark-btn {
-  padding: 3px 8px;
-  border-radius: 6px;
-  border: 1px dashed rgba(246,173,85,0.35);
-  background: transparent;
-  color: #f6ad55;
-  font-size: 0.78rem;
-  cursor: pointer;
-  transition: all 0.18s;
+.row-body { min-width: 0; }
+.row-q {
+  font-size: var(--fs-14);
+  color: var(--text);
+  line-height: 1.6;
+  margin-bottom: 6px;
+}
+.row-meta {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.fr-chip.pin {
+  background: var(--surface-2);
+  color: var(--text-subtle);
+}
+
+.ans-inline {
+  font-size: var(--fs-13);
+  color: var(--text-muted);
+  display: flex;
+  gap: 16px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.your-ans strong, .std-ans strong { color: var(--text); }
+.std-ans strong { color: var(--success); }
+
+.ans-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.ans-block {
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+}
+.ans-label {
+  font-size: 11px;
+  font-weight: var(--fw-medium);
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+.ans-block p {
+  font-size: var(--fs-13);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.row-comment {
+  font-size: var(--fs-12);
+  color: var(--text-muted);
+  line-height: 1.6;
   margin-top: 6px;
 }
-.item-mark-btn:hover { background: rgba(246,173,85,0.1); }
-.item-mark-btn.marked {
-  border-style: solid;
-  background: rgba(104,211,145,0.08);
-  border-color: rgba(104,211,145,0.4);
-  color: #68d391;
+
+.row-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.row-score {
+  font-size: var(--fs-20);
+  font-weight: var(--fw-semibold);
+  line-height: 1;
+}
+.row-score.good { color: var(--success); }
+.row-score.bad  { color: var(--danger); }
+.row-time {
+  font-size: 11px;
+  color: var(--text-subtle);
+}
+.row-mark {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--text-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--dur-fast) var(--ease);
+}
+.row-mark:hover { color: var(--accent); background: var(--accent-soft); }
+.row-mark .marked { color: var(--accent); }
+
+.sm-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--sp-6);
 }
 
-.restart-btn {
-  width: 100%;
-  padding: 14px;
-  border: none;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #4facfe, #00d4ff);
-  color: #080d18;
-  font-size: 1rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: 0 4px 20px rgba(79,172,254,0.3);
-}
-.restart-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 28px rgba(79,172,254,0.45); }
-
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to   { opacity: 1; transform: none; }
-}
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>

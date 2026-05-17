@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import Icon from "./ui/Icon.vue";
 
 interface WrongQuestion {
   question_id: number;
@@ -16,20 +17,18 @@ interface WrongQuestion {
   manually_added_count: number;
 }
 
+const props = defineProps<{ isActive?: boolean }>();
 const emit = defineEmits<{ startWrongPractice: [ids: number[]] }>();
 
-// 模块级缓存：组件重新挂载时直接用上次数据，不再显示 loading
-let _cache: WrongQuestion[] | null = null;
-
-const list = ref<WrongQuestion[]>(_cache ?? []);
-const isLoading = ref(_cache === null);
-const filterTag = ref('');
+const list = ref<WrongQuestion[]>([]);
+const isLoading = ref(false);
+const filterTag = ref("");
 const expandedId = ref<number | null>(null);
 
 async function fetchList() {
+  if (list.value.length === 0) isLoading.value = true;
   try {
     const data = await invoke<WrongQuestion[]>("get_wrong_questions");
-    _cache = data;
     list.value = data;
   } catch (e) {
     console.error("加载错题本失败", e);
@@ -40,31 +39,39 @@ async function fetchList() {
 
 onMounted(fetchList);
 
+watch(() => props.isActive, (active) => {
+  if (active) fetchList();
+});
+
 const allTags = computed(() => {
   const set = new Set<string>();
-  list.value.forEach(q => q.tags.split(',').forEach(t => set.add(t.trim())));
+  list.value.forEach((q) =>
+    q.tags.split(",").forEach((t) => {
+      const v = t.trim();
+      if (v) set.add(v);
+    })
+  );
   return Array.from(set).sort();
 });
 
 const filtered = computed(() =>
   filterTag.value
-    ? list.value.filter(q => q.tags.includes(filterTag.value))
+    ? list.value.filter((q) => q.tags.includes(filterTag.value))
     : list.value
 );
 
-const typeLabel = (t: string) => ({ SINGLE: '单选', MULTI: '多选', ESSAY: '简答' }[t] ?? t);
-const difficultyLabel = (d: number) => ['', '入门', '简单', '中等', '困难', '专家'][d] ?? '未知';
+const typeLabel = (t: string) => ({ SINGLE: "单选", MULTI: "多选", ESSAY: "简答" }[t] ?? t);
+const difficultyLabel = (d: number) => ["", "入门", "简单", "中等", "困难", "专家"][d] ?? "—";
 
 function formatDate(s: string) {
-  return s ? s.slice(0, 10) : '--';
+  return s ? s.slice(0, 10) : "—";
 }
 
 async function removeQuestion(q: WrongQuestion, e: MouseEvent) {
   e.stopPropagation();
   try {
     await invoke("remove_from_wrong_book", { questionId: q.question_id });
-    list.value = list.value.filter(item => item.question_id !== q.question_id);
-    _cache = list.value;
+    list.value = list.value.filter((item) => item.question_id !== q.question_id);
     if (expandedId.value === q.question_id) expandedId.value = null;
   } catch (err) {
     console.error("删除失败", err);
@@ -72,84 +79,95 @@ async function removeQuestion(q: WrongQuestion, e: MouseEvent) {
 }
 
 function startPractice() {
-  const ids = filtered.value.map(q => q.question_id);
-  emit('startWrongPractice', ids);
+  const ids = filtered.value.map((q) => q.question_id);
+  emit("startWrongPractice", ids);
 }
 </script>
 
 <template>
-  <div class="wrongbook-container">
-    <div class="wb-header">
+  <div class="fr-page wb">
+    <header class="head">
       <div>
-        <h2 class="wb-title">错题本</h2>
-        <p class="wb-subtitle">共 {{ filtered.length }} 道错题{{ filterTag ? `（${filterTag}）` : '' }}</p>
+        <h1 class="fr-page-title">错题本</h1>
+        <p class="fr-page-subtitle">
+          共 {{ filtered.length }} 道错题{{ filterTag ? ` · ${filterTag}` : "" }}
+        </p>
       </div>
-      <button
-        class="practice-btn"
-        :disabled="filtered.length === 0"
-        @click="startPractice"
-      >重练错题 →</button>
-    </div>
+      <button class="fr-btn fr-btn-primary" :disabled="filtered.length === 0" @click="startPractice">
+        <Icon name="Play" :size="14" />
+        <span>重练错题</span>
+      </button>
+    </header>
 
-    <!-- 标签筛选 -->
-    <div class="tag-filter">
+    <div class="filter-bar">
       <button
-        :class="['filter-tag', { active: filterTag === '' }]"
+        :class="['tag-pill', { active: filterTag === '' }]"
         @click="filterTag = ''"
-      >全部</button>
+      >
+        全部
+      </button>
       <button
-        v-for="tag in allTags" :key="tag"
-        :class="['filter-tag', { active: filterTag === tag }]"
+        v-for="tag in allTags"
+        :key="tag"
+        :class="['tag-pill', { active: filterTag === tag }]"
         @click="filterTag = tag"
-      >{{ tag }}</button>
+      >
+        {{ tag }}
+      </button>
     </div>
 
-    <!-- 加载中 -->
-    <div v-if="isLoading" class="wb-empty">加载中...</div>
-
-    <!-- 空状态 -->
-    <div v-else-if="filtered.length === 0" class="wb-empty">
-      <div class="empty-icon">🎉</div>
-      <p>{{ filterTag ? '该考点暂无错题' : '暂无错题记录，继续加油！' }}</p>
+    <div v-if="isLoading" class="state">
+      <Icon name="Loader2" :size="16" class="spin" />
+      <span>加载中...</span>
     </div>
 
-    <!-- 错题列表 -->
-    <div v-else class="wb-list">
+    <div v-else-if="filtered.length === 0" class="empty">
+      <Icon name="CheckCircle2" :size="40" :stroke-width="1.5" />
+      <p>{{ filterTag ? "该标签下暂无错题" : "暂无错题，继续保持。" }}</p>
+    </div>
+
+    <div v-else class="list">
       <div
-        v-for="q in filtered" :key="q.question_id"
-        :class="['wb-item', { 'wb-item-open': expandedId === q.question_id }]"
+        v-for="q in filtered"
+        :key="q.question_id"
+        :class="['item', { open: expandedId === q.question_id }]"
         @click="expandedId = expandedId === q.question_id ? null : q.question_id"
       >
-        <div class="wb-item-main">
-          <div class="wb-item-left">
-            <span class="wrong-count">×{{ q.wrong_count }}</span>
+        <div class="row">
+          <div class="row-left">
+            <span class="wrong-count fr-mono">×{{ q.wrong_count }}</span>
           </div>
-          <div class="wb-item-body">
-            <p class="wb-question">{{ q.content }}</p>
-            <div class="wb-meta">
-              <span class="itag">{{ q.tags }}</span>
-              <span class="itag">{{ typeLabel(q.question_type) }}</span>
-              <span class="itag">{{ difficultyLabel(q.difficulty) }}</span>
-              <span v-if="q.manually_added_count > 0" class="itag itag-marked">📌 手动标记</span>
+
+          <div class="row-body">
+            <p class="q-content">{{ q.content }}</p>
+            <div class="q-meta">
+              <span class="fr-chip">{{ typeLabel(q.question_type) }}</span>
+              <span class="fr-chip">{{ difficultyLabel(q.difficulty) }}</span>
+              <span v-for="t in q.tags.split(',').map(s => s.trim()).filter(Boolean).slice(0, 3)" :key="t" class="fr-chip fr-chip-accent">{{ t }}</span>
+              <span v-if="q.manually_added_count > 0" class="fr-chip pin">
+                <Icon name="Pin" :size="10" /> 手动标记
+              </span>
             </div>
           </div>
-          <div class="wb-item-right">
-            <span :class="['last-score', q.last_score >= 60 ? 'score-ok' : 'score-bad']">
-              {{ q.last_score }}<span class="score-unit">分</span>
+
+          <div class="row-right">
+            <span :class="['score', 'fr-mono', q.last_score >= 60 ? 'score-ok' : 'score-bad']">
+              {{ q.last_score }}
             </span>
-            <span class="last-date">{{ formatDate(q.last_attempt) }}</span>
-            <button class="delete-btn" @click="removeQuestion(q, $event)" title="从错题本移除">✕</button>
+            <span class="date fr-mono">{{ formatDate(q.last_attempt) }}</span>
+            <button class="icon-btn" title="从错题本移除" @click="removeQuestion(q, $event)">
+              <Icon name="X" :size="14" />
+            </button>
           </div>
         </div>
 
-        <!-- 展开：固定高度，长答案内部滚动 -->
-        <div class="wb-answer-wrap">
-          <div class="wb-answer">
-            <div class="wb-answer-inner">
-              <span class="answer-label">标准答案</span>
+        <div class="answer-wrap">
+          <div class="answer">
+            <div class="answer-inner">
+              <div class="answer-label">标准答案</div>
               <p class="answer-text">{{ q.standard_answer }}</p>
-              <span class="answer-label explanation-label">解析</span>
-              <p class="answer-text explanation-text">{{ q.explanation }}</p>
+              <div class="answer-label explanation">解析</div>
+              <p class="answer-text">{{ q.explanation }}</p>
             </div>
           </div>
         </div>
@@ -159,168 +177,181 @@ function startPractice() {
 </template>
 
 <style scoped>
-.wrongbook-container {
-  height: 100%;
-  overflow-y: auto;
-  padding: 28px 32px 48px;
-  max-width: 1040px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
+.wb { max-width: var(--content-max); margin: 0 auto; }
 
-.wb-header {
+.head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
 }
-.wb-title {
-  font-size: 1.6rem;
-  font-weight: 700;
-  background: linear-gradient(90deg, #4facfe, #00d4ff);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  margin-bottom: 4px;
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--sp-4);
+  padding-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--border);
 }
-.wb-subtitle { font-size: 0.875rem; color: #4a5568; }
-
-.practice-btn {
-  padding: 10px 22px;
-  border: none;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #4facfe, #00d4ff);
-  color: #080d18;
-  font-size: 0.9rem;
-  font-weight: 700;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.2s;
-  box-shadow: 0 4px 16px rgba(79,172,254,0.3);
-  flex-shrink: 0;
+.tag-pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: var(--fs-12);
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: all var(--dur-fast) var(--ease);
 }
-.practice-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 24px rgba(79,172,254,0.45); }
-.practice-btn:disabled { background: rgba(255,255,255,0.08); color: #4a5568; cursor: not-allowed; box-shadow: none; }
-
-.tag-filter { display: flex; flex-wrap: wrap; gap: 6px; }
-.filter-tag {
-  padding: 5px 14px;
-  border-radius: 7px;
-  border: 1px solid rgba(99,179,237,0.15);
-  background: transparent;
-  color: #4a5568;
-  font-size: 0.8rem;
-  cursor: pointer;
-  transition: all 0.18s;
+.tag-pill:hover:not(.active) {
+  border-color: var(--border-strong);
+  color: var(--text);
 }
-.filter-tag:hover { border-color: rgba(79,172,254,0.35); color: #90cdf4; }
-.filter-tag.active { background: rgba(79,172,254,0.12); border-color: rgba(79,172,254,0.4); color: #4facfe; font-weight: 600; }
-
-.wb-empty { text-align: center; padding: 60px 0; color: #4a5568; }
-.empty-icon { font-size: 3rem; margin-bottom: 12px; }
-
-.wb-list { display: flex; flex-direction: column; gap: 8px; }
-
-.wb-item {
-  background: rgba(13,21,41,0.6);
-  border: 1px solid rgba(99,179,237,0.1);
-  border-radius: 12px;
-  overflow: hidden;
-  cursor: pointer;
-  transition: border-color 0.18s;
+.tag-pill.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+  font-weight: var(--fw-medium);
 }
-.wb-item:hover { border-color: rgba(79,172,254,0.25); }
-.wb-item-open { border-color: rgba(79,172,254,0.3); }
 
-.wb-item-main {
+.state {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 14px 16px;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-8);
+  color: var(--text-muted);
+  font-size: var(--fs-13);
+}
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-12) 0;
+  color: var(--text-subtle);
+}
+.empty p { font-size: var(--fs-13); }
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
 }
 
-.wb-item-left { min-width: 36px; text-align: center; flex-shrink: 0; }
+.item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.item:hover { border-color: var(--border-strong); }
+.item.open { border-color: var(--accent); }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.row-left { flex-shrink: 0; }
 .wrong-count {
-  font-size: 0.82rem;
-  font-weight: 700;
-  color: #fc8181;
-  background: rgba(252,129,129,0.1);
-  border: 1px solid rgba(252,129,129,0.2);
-  border-radius: 6px;
-  padding: 2px 7px;
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-semibold);
 }
 
-.wb-item-body { flex: 1; min-width: 0; }
-.wb-question {
-  font-size: 0.9rem;
-  color: #e2e8f0;
+.row-body { flex: 1; min-width: 0; }
+.q-content {
+  font-size: var(--fs-13);
+  color: var(--text);
+  line-height: 1.5;
   margin-bottom: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.wb-meta { display: flex; gap: 6px; flex-wrap: wrap; }
-.itag {
-  font-size: 0.68rem;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: rgba(99,179,237,0.08);
-  color: #4a5568;
-  border: 1px solid rgba(99,179,237,0.12);
+.q-meta { display: flex; gap: 4px; flex-wrap: wrap; }
+.fr-chip.pin {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-color: transparent;
 }
-.itag-marked { background: rgba(246,173,85,0.1); color: #f6ad55; border-color: rgba(246,173,85,0.2); }
 
-.wb-item-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 52px; flex-shrink: 0; }
-.delete-btn {
-  background: none;
-  border: none;
-  color: #4a5568;
-  font-size: 0.72rem;
-  cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 4px;
-  line-height: 1;
-  transition: color 0.15s, background 0.15s;
-}
-.delete-btn:hover { color: #fc8181; background: rgba(252,129,129,0.1); }
-.last-score { font-size: 1.3rem; font-weight: 800; line-height: 1; }
-.score-ok  { color: #68d391; }
-.score-bad { color: #fc8181; }
-.score-unit { font-size: 0.7rem; font-weight: 400; }
-.last-date { font-size: 0.68rem; color: #4a5568; }
-
-/* ── 展开区：grid 动画 + 固定内容高度，所有题展开量完全一致 ── */
-.wb-answer-wrap {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.22s ease;
-}
-.wb-item-open .wb-answer-wrap {
-  grid-template-rows: 1fr;
-}
-.wb-answer {
-  overflow: hidden;
-  min-height: 0;
-}
-.wb-answer-inner {
-  height: 160px;
-  overflow-y: auto;
-  padding: 12px 16px;
-  border-top: 1px solid rgba(99,179,237,0.1);
-  background: rgba(104,211,145,0.04);
+.row-right {
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
   gap: 4px;
+  flex-shrink: 0;
+}
+.score {
+  font-size: var(--fs-20);
+  font-weight: var(--fw-semibold);
+  line-height: 1;
+}
+.score-ok  { color: var(--success); }
+.score-bad { color: var(--danger); }
+.date {
+  font-size: 11px;
+  color: var(--text-subtle);
+}
+
+.icon-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--text-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--dur-fast) var(--ease);
+}
+.icon-btn:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.answer-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--dur-base) var(--ease);
+}
+.item.open .answer-wrap { grid-template-rows: 1fr; }
+.answer { overflow: hidden; min-height: 0; }
+.answer-inner {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: var(--sp-4);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
 }
 .answer-label {
-  font-size: 0.68rem;
-  font-weight: 600;
-  color: #68d391;
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+  color: var(--success);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  margin-bottom: 4px;
 }
-.explanation-label { color: #63b3ed; margin-top: 8px; }
-.answer-text { font-size: 0.85rem; color: #9ae6b4; line-height: 1.6; }
-.explanation-text { color: #90cdf4; }
+.answer-label.explanation {
+  color: var(--info);
+  margin-top: var(--sp-3);
+}
+.answer-text {
+  font-size: var(--fs-13);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>

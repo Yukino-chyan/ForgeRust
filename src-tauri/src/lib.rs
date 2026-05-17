@@ -4,7 +4,11 @@ mod llm_client;
 mod config;
 
 use crate::config::AppConfig;
-use crate::models::{EvaluateResponse, ImportQuestion, ImportResult, Question, ImportProgress, SaveRecordInput, WrongQuestion};
+use crate::models::{
+    DashboardStats, DayPoint, EvaluateResponse, GeneratedQuestion, GenerateProgress,
+    ImportProgress, ImportQuestion, ImportResult, Question, SaveRecordInput, SessionRecord,
+    TagStat, WrongQuestion,
+};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -418,6 +422,191 @@ async fn import_questions_from_file(
     })
 }
 
+// ── AI 出题命令 ────────────────────────────────────────────
+
+#[tauri::command]
+async fn generate_questions_by_ai(
+    topic: String,
+    question_type: String,
+    difficulty: i32,
+    count: u32,
+    requirement: Option<String>,
+    config: tauri::State<'_, Mutex<AppConfig>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let (api_url, api_key) = {
+        let cfg = config.lock().map_err(|e| e.to_string())?;
+        (cfg.api_url.clone(), cfg.api_key.clone())
+    };
+    let total = count as usize;
+
+    tokio::spawn(async move {
+        for i in 0..total {
+            let _ = app.emit("ai-generate-progress", GenerateProgress {
+                current: i,
+                total,
+                question: None,
+                message: format!("正在生成第 {}/{} 题...", i + 1, total),
+                is_finished: false,
+                error: None,
+            });
+
+            match llm_client::generate_single_question(
+                &api_url, &api_key, &topic, &question_type, difficulty,
+                requirement.as_deref(),
+            ).await {
+                Ok(q) => {
+                    let _ = app.emit("ai-generate-progress", GenerateProgress {
+                        current: i + 1,
+                        total,
+                        question: Some(q),
+                        message: format!("已生成 {}/{} 题", i + 1, total),
+                        is_finished: false,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    let _ = app.emit("ai-generate-progress", GenerateProgress {
+                        current: i + 1,
+                        total,
+                        question: None,
+                        message: format!("第 {} 题生成失败", i + 1),
+                        is_finished: false,
+                        error: Some(e),
+                    });
+                }
+            }
+        }
+
+        let _ = app.emit("ai-generate-progress", GenerateProgress {
+            current: total,
+            total,
+            question: None,
+            message: "🎉 生成完成！".to_string(),
+            is_finished: true,
+            error: None,
+        });
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_ai_generated_questions(
+    questions: Vec<GeneratedQuestion>,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<usize, String> {
+    let mut saved = 0usize;
+    for q in &questions {
+        let options_json = q.options.as_ref()
+            .map(|o| serde_json::to_string(o).unwrap_or_default());
+
+        let res = sqlx::query(
+            "INSERT INTO questions
+                (question_type, content, options, tags, difficulty, standard_answer, explanation)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(content) DO UPDATE SET
+                standard_answer = excluded.standard_answer,
+                explanation = excluded.explanation,
+                tags = excluded.tags",
+        )
+        .bind(&q.question_type)
+        .bind(&q.content)
+        .bind(&options_json)
+        .bind(&q.tags)
+        .bind(q.difficulty)
+        .bind(&q.standard_answer)
+        .bind(&q.explanation)
+        .execute(&*pool)
+        .await;
+
+        match res {
+            Ok(_) => saved += 1,
+            Err(e) => eprintln!("❌ AI 出题入库失败: {}", e),
+        }
+    }
+    Ok(saved)
+}
+
+fn norm_tag(t: &Option<String>) -> Option<String> {
+    t.as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && *s != "全部")
+        .map(|s| s.to_string())
+}
+fn norm_search(s: &Option<String>) -> Option<String> {
+    s.as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+#[tauri::command]
+async fn list_questions(
+    tag: Option<String>,
+    search: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<Question>, String> {
+    let limit = limit.unwrap_or(50).max(1).min(500);
+    let offset = offset.unwrap_or(0).max(0);
+    let tag = norm_tag(&tag);
+    let search = norm_search(&search);
+
+    let mut sql = String::from("SELECT * FROM questions WHERE 1=1");
+    if tag.is_some() { sql.push_str(" AND tags LIKE ?"); }
+    if search.is_some() {
+        sql.push_str(" AND (content LIKE ? OR tags LIKE ? OR standard_answer LIKE ?)");
+    }
+    sql.push_str(" ORDER BY id DESC LIMIT ? OFFSET ?");
+
+    let mut q = sqlx::query_as::<_, Question>(&sql);
+    if let Some(t) = &tag { q = q.bind(format!("%{}%", t)); }
+    if let Some(s) = &search {
+        let like = format!("%{}%", s);
+        q = q.bind(like.clone()).bind(like.clone()).bind(like);
+    }
+    q = q.bind(limit).bind(offset);
+    q.fetch_all(&*pool).await.map_err(|e| format!("查询题库失败: {}", e))
+}
+
+#[tauri::command]
+async fn delete_question(
+    id: i32,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM questions WHERE id = ?")
+        .bind(id)
+        .execute(&*pool).await
+        .map_err(|e| format!("删除题目失败: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn count_questions(
+    tag: Option<String>,
+    search: Option<String>,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<i64, String> {
+    let tag = norm_tag(&tag);
+    let search = norm_search(&search);
+
+    let mut sql = String::from("SELECT COUNT(*) FROM questions WHERE 1=1");
+    if tag.is_some() { sql.push_str(" AND tags LIKE ?"); }
+    if search.is_some() {
+        sql.push_str(" AND (content LIKE ? OR tags LIKE ? OR standard_answer LIKE ?)");
+    }
+
+    let mut q = sqlx::query_scalar::<_, i64>(&sql);
+    if let Some(t) = &tag { q = q.bind(format!("%{}%", t)); }
+    if let Some(s) = &search {
+        let like = format!("%{}%", s);
+        q = q.bind(like.clone()).bind(like.clone()).bind(like);
+    }
+    q.fetch_one(&*pool).await.map_err(|e| format!("统计题目数量失败: {}", e))
+}
+
 #[tauri::command]
 async fn get_all_tags(
     pool: tauri::State<'_, SqlitePool>,
@@ -463,6 +652,262 @@ async fn get_tag_counts(
     Ok(counts)
 }
 
+// ── Dashboard 统计命令 ────────────────────────────────────
+
+fn is_record_correct(score: i32, is_correct: Option<i32>, skipped: i32) -> Option<bool> {
+    if skipped != 0 { return Some(false); }
+    if let Some(c) = is_correct {
+        return Some(c != 0);
+    }
+    Some(score >= 60)
+}
+
+#[tauri::command]
+async fn get_dashboard_stats(
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<DashboardStats, String> {
+    // 全部记录（按日期 + 正确性聚合）
+    let rows: Vec<(i32, Option<i32>, i32, String)> = sqlx::query_as(
+        "SELECT score, is_correct, skipped, substr(created_at, 1, 10) AS day
+         FROM training_records"
+    )
+    .fetch_all(&*pool)
+    .await
+    .map_err(|e| format!("查询训练记录失败: {}", e))?;
+
+    let total_answered = rows.len() as i64;
+
+    // 整体正确率（不包含 skipped）
+    let mut correct_n = 0i64;
+    let mut answered_n = 0i64;
+    for (score, ic, sk, _) in &rows {
+        if *sk != 0 { continue; }
+        answered_n += 1;
+        if is_record_correct(*score, *ic, *sk).unwrap_or(false) {
+            correct_n += 1;
+        }
+    }
+    let overall_accuracy = if answered_n > 0 {
+        correct_n as f64 / answered_n as f64
+    } else { 0.0 };
+
+    // 今日做题数
+    let today: String = sqlx::query_scalar("SELECT date('now', 'localtime')")
+        .fetch_one(&*pool).await
+        .map_err(|e| format!("查询日期失败: {}", e))?;
+    let today_answered = rows.iter().filter(|(_, _, _, d)| *d == today).count() as i64;
+
+    // 连续打卡：从今天往前数，每天必须有 >=1 条记录
+    use std::collections::HashSet;
+    let active_days: HashSet<&str> = rows.iter().map(|(_, _, _, d)| d.as_str()).collect();
+    let mut streak_days = 0i64;
+    // 用 SQLite 计算日期偏移
+    let mut offset = 0i64;
+    loop {
+        let probe: String = sqlx::query_scalar(
+            "SELECT date('now', 'localtime', ? || ' day')"
+        )
+        .bind(format!("-{}", offset))
+        .fetch_one(&*pool).await
+        .map_err(|e| format!("查询日期偏移失败: {}", e))?;
+        if active_days.contains(probe.as_str()) {
+            streak_days += 1;
+            offset += 1;
+        } else {
+            // 今天还没做题不打断连击（仍可保留昨天起的连击）
+            if offset == 0 { offset += 1; continue; }
+            break;
+        }
+        if offset > 365 { break; }
+    }
+
+    // 本周 / 上周对比（按自然 7 天滚动）
+    let week_ago: String = sqlx::query_scalar(
+        "SELECT date('now', 'localtime', '-7 day')"
+    ).fetch_one(&*pool).await.map_err(|e| e.to_string())?;
+    let two_weeks_ago: String = sqlx::query_scalar(
+        "SELECT date('now', 'localtime', '-14 day')"
+    ).fetch_one(&*pool).await.map_err(|e| e.to_string())?;
+
+    let mut this_week_total = 0i64;
+    let mut this_week_correct = 0i64;
+    let mut this_week_answered = 0i64;
+    let mut last_week_total = 0i64;
+    let mut last_week_correct = 0i64;
+    let mut last_week_answered = 0i64;
+    for (score, ic, sk, d) in &rows {
+        let in_this = d.as_str() > week_ago.as_str();
+        let in_last = d.as_str() > two_weeks_ago.as_str() && d.as_str() <= week_ago.as_str();
+        if in_this {
+            this_week_total += 1;
+            if *sk == 0 {
+                this_week_answered += 1;
+                if is_record_correct(*score, *ic, *sk).unwrap_or(false) {
+                    this_week_correct += 1;
+                }
+            }
+        } else if in_last {
+            last_week_total += 1;
+            if *sk == 0 {
+                last_week_answered += 1;
+                if is_record_correct(*score, *ic, *sk).unwrap_or(false) {
+                    last_week_correct += 1;
+                }
+            }
+        }
+    }
+    let week_delta_answered = this_week_total - last_week_total;
+    let this_acc = if this_week_answered > 0 { this_week_correct as f64 / this_week_answered as f64 } else { 0.0 };
+    let last_acc = if last_week_answered > 0 { last_week_correct as f64 / last_week_answered as f64 } else { 0.0 };
+    let week_delta_accuracy = (this_acc - last_acc) * 100.0;
+
+    // 总标签数（去重）
+    let tag_rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT tags FROM questions")
+        .fetch_all(&*pool).await.map_err(|e| e.to_string())?;
+    let mut all_tags: HashSet<String> = HashSet::new();
+    for (s,) in tag_rows {
+        for t in s.split(',') {
+            let t = t.trim();
+            if !t.is_empty() { all_tags.insert(t.to_string()); }
+        }
+    }
+    let total_tags = all_tags.len() as i64;
+
+    // 已掌握标签：复用 get_tag_mastery 逻辑
+    let mastery = compute_tag_mastery(&pool).await?;
+    let mastered_tags = mastery.iter().filter(|t| t.total >= 5 && t.accuracy >= 0.8).count() as i64;
+
+    // 待复习 = 错题本条数
+    let pending_review: i64 = sqlx::query_scalar(
+        "SELECT COUNT(DISTINCT q.id)
+         FROM training_records r JOIN questions q ON q.id = r.question_id
+         WHERE r.score < 60 OR r.is_correct = 0 OR r.manually_added = 1"
+    ).fetch_one(&*pool).await.unwrap_or(0);
+
+    Ok(DashboardStats {
+        total_answered,
+        overall_accuracy,
+        mastered_tags,
+        total_tags,
+        pending_review,
+        streak_days,
+        today_answered,
+        week_delta_answered,
+        week_delta_accuracy,
+    })
+}
+
+#[tauri::command]
+async fn get_accuracy_trend(
+    days: i64,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<DayPoint>, String> {
+    let days = days.max(1).min(180);
+    let rows: Vec<(String, i32, Option<i32>, i32)> = sqlx::query_as(
+        "SELECT substr(created_at, 1, 10) AS day, score, is_correct, skipped
+         FROM training_records
+         WHERE date(created_at) >= date('now', 'localtime', ? || ' day')
+         ORDER BY day ASC"
+    )
+    .bind(format!("-{}", days - 1))
+    .fetch_all(&*pool).await
+    .map_err(|e| format!("查询趋势失败: {}", e))?;
+
+    use std::collections::BTreeMap;
+    let mut by_day: BTreeMap<String, (i64, i64)> = BTreeMap::new(); // (correct, answered)
+    for (day, score, ic, sk) in rows {
+        if sk != 0 { continue; }
+        let entry = by_day.entry(day).or_insert((0, 0));
+        entry.1 += 1;
+        if is_record_correct(score, ic, sk).unwrap_or(false) {
+            entry.0 += 1;
+        }
+    }
+    Ok(by_day.into_iter().map(|(date, (c, a))| DayPoint {
+        date,
+        accuracy: if a > 0 { c as f64 / a as f64 } else { 0.0 },
+        count: a,
+    }).collect())
+}
+
+async fn compute_tag_mastery(pool: &SqlitePool) -> Result<Vec<TagStat>, String> {
+    let rows: Vec<(String, i32, Option<i32>, i32)> = sqlx::query_as(
+        "SELECT q.tags, r.score, r.is_correct, r.skipped
+         FROM training_records r JOIN questions q ON q.id = r.question_id"
+    ).fetch_all(pool).await.map_err(|e| e.to_string())?;
+
+    use std::collections::HashMap;
+    let mut by_tag: HashMap<String, (i64, i64)> = HashMap::new(); // (correct, total_answered)
+    for (tags, score, ic, sk) in rows {
+        if sk != 0 { continue; }
+        let correct = is_record_correct(score, ic, sk).unwrap_or(false);
+        for t in tags.split(',') {
+            let t = t.trim();
+            if t.is_empty() { continue; }
+            let e = by_tag.entry(t.to_string()).or_insert((0, 0));
+            e.1 += 1;
+            if correct { e.0 += 1; }
+        }
+    }
+    let mut out: Vec<TagStat> = by_tag.into_iter()
+        .map(|(tag, (c, t))| TagStat {
+            tag,
+            accuracy: if t > 0 { c as f64 / t as f64 } else { 0.0 },
+            total: t,
+        }).collect();
+    out.sort_by(|a, b| b.accuracy.partial_cmp(&a.accuracy).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(out)
+}
+
+#[tauri::command]
+async fn get_tag_mastery(
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<TagStat>, String> {
+    compute_tag_mastery(&pool).await
+}
+
+#[tauri::command]
+async fn delete_session(
+    id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<(), String> {
+    // 先删 records（FK ON DELETE CASCADE 在未开启 PRAGMA 时不会自动级联）
+    sqlx::query("DELETE FROM training_records WHERE session_id = ?")
+        .bind(id)
+        .execute(&*pool).await
+        .map_err(|e| format!("删除训练记录失败: {}", e))?;
+    sqlx::query("DELETE FROM training_sessions WHERE id = ?")
+        .bind(id)
+        .execute(&*pool).await
+        .map_err(|e| format!("删除会话失败: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_recent_sessions(
+    limit: i64,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<SessionRecord>, String> {
+    let limit = limit.max(1).min(50);
+    let rows: Vec<(i64, String, i32, i32, String)> = sqlx::query_as(
+        "SELECT id, created_at, total_count, correct_count, tags
+         FROM training_sessions
+         ORDER BY id DESC
+         LIMIT ?"
+    )
+    .bind(limit)
+    .fetch_all(&*pool).await
+    .map_err(|e| format!("查询会话失败: {}", e))?;
+
+    Ok(rows.into_iter().map(|(id, ts, total, correct, tags)| SessionRecord {
+        id,
+        started_at: ts,
+        total: total as i64,
+        correct: correct as i64,
+        tags: tags.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+    }).collect())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -478,10 +923,34 @@ pub fn run() {
             app.manage(Mutex::new(cfg));
             app.manage(ConfigDir(config_dir));
 
-            // 初始化数据库
+            // 解析数据库路径：放在 app_data_dir，避免 dev 监视器把 SQLite WAL 写入误判为源码变更
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("无法获取应用数据目录");
+            let _ = std::fs::create_dir_all(&app_data_dir);
+            let db_path = app_data_dir.join("forgerust.db");
+
+            // 一次性迁移：若旧位置（src-tauri/forgerust.db 或 cwd/forgerust.db）有数据，复制到新位置
+            if !db_path.exists() {
+                for legacy in ["forgerust.db", "src-tauri/forgerust.db", "../forgerust.db"] {
+                    let p = PathBuf::from(legacy);
+                    if p.exists() {
+                        if let Err(e) = std::fs::copy(&p, &db_path) {
+                            eprintln!("迁移旧数据库失败: {}", e);
+                        } else {
+                            println!("已迁移旧数据库 {} -> {}", p.display(), db_path.display());
+                        }
+                        break;
+                    }
+                }
+            }
+
+            println!("数据库位置: {}", db_path.display());
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                match db::init_db().await {
+                match db::init_db(db_path).await {
                     Ok(pool) => {
                         handle.manage(pool);
                         println!("数据库连接池挂载成功！");
@@ -504,6 +973,16 @@ pub fn run() {
             save_training_session,
             get_wrong_questions,
             remove_from_wrong_book,
+            generate_questions_by_ai,
+            save_ai_generated_questions,
+            get_dashboard_stats,
+            get_accuracy_trend,
+            get_tag_mastery,
+            get_recent_sessions,
+            delete_session,
+            list_questions,
+            delete_question,
+            count_questions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

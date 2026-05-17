@@ -1,16 +1,21 @@
-use sqlx::{  
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},  
-    SqlitePool,  
-};  
-use std::str::FromStr;  
-  
-pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {  
-    let options = SqliteConnectOptions::from_str("sqlite://forgerust.db")?  
-        .create_if_missing(true);  
-  
-    let pool = SqlitePoolOptions::new()  
-        .max_connections(5)  
-        .connect_with(options)  
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    SqlitePool,
+};
+use std::path::PathBuf;
+
+pub async fn init_db(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
+    if let Some(parent) = db_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal);
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
         .await?;  
   
     // DDL：新增 explanation 字段  

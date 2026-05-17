@@ -1,5 +1,8 @@
 # App config (contains API keys — never commit)
 src-tauri/forgerust.db
+
+# Demo / presentation seed scripts
+scripts/
 **/AppData/Roaming/com.forgerust.app/
 
 # Logs

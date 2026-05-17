@@ -13,6 +13,14 @@ pub struct Question {
     pub standard_answer: String,  
     pub explanation: String,
 }  
+
+#[derive(Debug, Serialize, Deserialize, FromRow, Clone)]
+pub struct Topic {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub created_at: String,
+}
   
 // 2. 导入文件中单道题的格式
 #[derive(Debug, Deserialize)]  
@@ -143,4 +151,40 @@ pub struct SessionRecord {
     pub total: i64,
     pub correct: i64,
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MockInterviewStart {
+    pub interview_id: i64,
+    pub questions: Vec<Question>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MockEvaluation {
+    pub turn_id: i64,
+    pub score: i32,
+    pub comment: String,
+    pub follow_up: String,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct MockInterviewTurn {
+    pub id: i64,
+    pub interview_id: i64,
+    pub question_id: i32,
+    pub question_content: String,
+    pub user_answer: String,
+    pub ai_comment: String,
+    pub follow_up: String,
+    pub follow_up_answer: String,
+    pub score: i32,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MockInterviewReport {
+    pub interview_id: i64,
+    pub average_score: f64,
+    pub summary: String,
+    pub turns: Vec<MockInterviewTurn>,
 }

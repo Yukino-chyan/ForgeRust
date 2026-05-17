@@ -10,6 +10,7 @@ import WrongBook from "../WrongBook.vue";
 import AIGenerate from "../AIGenerate.vue";
 import QuestionLibrary from "../QuestionLibrary.vue";
 import Settings from "../Settings.vue";
+import MockInterview from "../MockInterview.vue";
 import Icon from "../ui/Icon.vue";
 
 import { useImportProgress } from "../../composables/useImportProgress";
@@ -122,7 +123,11 @@ const importPercent = computed(() => {
 
       <Settings v-show="currentView === 'settings'" />
 
-      <div v-show="currentView === 'mock_interview'" class="coming-soon">
+      <MockInterview
+        v-show="currentView === 'mock_interview'"
+      />
+
+      <div v-if="false" class="coming-soon">
         <Icon name="MessageSquare" :size="48" :stroke-width="1.5" />
         <h2>AI 模拟面试</h2>
         <p>基于大语言模型的动态追问式面试体验。</p>

@@ -33,6 +33,7 @@ const primary: NavItem[] = [
   { view: "wrong_book",       label: "错题本",   icon: "Bookmark" },
   { view: "ai_generate",      label: "AI 出题",  icon: "Sparkles" },
   { view: "question_library", label: "题库管理", icon: "Library" },
+  { view: "mock_interview",   label: "模拟面试", icon: "MessageSquare", badge: "MVP" },
 ];
 
 const secondary: NavItem[] = [
@@ -64,7 +65,7 @@ const secondary: NavItem[] = [
 
     <div class="nav-divider"></div>
 
-    <nav class="nav nav-secondary">
+    <nav v-if="false" class="nav nav-secondary">
       <button
         v-for="item in secondary"
         :key="item.view"

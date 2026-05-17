@@ -4,6 +4,105 @@ use sqlx::{
 };
 use std::path::PathBuf;
 
+use crate::models::Topic;
+
+const DEFAULT_TOPICS: &[(&str, &str)] = &[
+    ("Java", "Java language and JVM interview topic"),
+    ("Rust", "Rust language interview topic"),
+    ("操作系统", "Operating system interview topic"),
+    ("计算机网络", "Computer networking interview topic"),
+    ("数据库", "Database interview topic"),
+    ("数据结构", "Data structure interview topic"),
+    ("其他", "General interview topic"),
+];
+
+pub async fn list_topics(pool: &SqlitePool) -> Result<Vec<Topic>, sqlx::Error> {
+    sqlx::query_as::<_, Topic>(
+        "SELECT id, name, description, created_at
+         FROM topics
+         ORDER BY lower(name) ASC",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn create_topic(
+    pool: &SqlitePool,
+    name: &str,
+    description: &str,
+) -> Result<Topic, String> {
+    let name = name.trim();
+    let description = description.trim();
+    if name.is_empty() {
+        return Err("考点名称不能为空".into());
+    }
+    if name.contains(',') {
+        return Err("考点名称不能包含英文逗号".into());
+    }
+
+    sqlx::query(
+        "INSERT INTO topics (name, description)
+         VALUES (?, ?)
+         ON CONFLICT(name) DO UPDATE SET
+            description = CASE
+                WHEN excluded.description = '' THEN topics.description
+                ELSE excluded.description
+            END",
+    )
+    .bind(name)
+    .bind(description)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("保存考点失败: {}", e))?;
+
+    sqlx::query_as::<_, Topic>(
+        "SELECT id, name, description, created_at
+         FROM topics
+         WHERE name = ?",
+    )
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("读取考点失败: {}", e))
+}
+
+async fn seed_default_topics(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    for (name, description) in DEFAULT_TOPICS {
+        sqlx::query(
+            "INSERT OR IGNORE INTO topics (name, description)
+             VALUES (?, ?)",
+        )
+        .bind(name)
+        .bind(description)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn seed_topics_from_questions(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT tags FROM questions")
+        .fetch_all(pool)
+        .await?;
+
+    for (tags,) in rows {
+        for tag in tags.split(',') {
+            let name = tag.trim();
+            if name.is_empty() {
+                continue;
+            }
+            sqlx::query(
+                "INSERT OR IGNORE INTO topics (name, description)
+                 VALUES (?, '')",
+            )
+            .bind(name)
+            .execute(pool)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn init_db(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     if let Some(parent) = db_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -69,6 +168,50 @@ pub async fn init_db(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS topics (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT    NOT NULL UNIQUE,
+            description TEXT    NOT NULL DEFAULT '',
+            created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+        );"
+    )
+    .execute(&pool)
+    .await?;
+    seed_default_topics(&pool).await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mock_interviews (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+            ended_at      TEXT,
+            tags          TEXT    NOT NULL DEFAULT '',
+            question_count INTEGER NOT NULL,
+            average_score REAL    NOT NULL DEFAULT 0,
+            summary       TEXT    NOT NULL DEFAULT '',
+            status        TEXT    NOT NULL DEFAULT 'active'
+        );"
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mock_interview_turns (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            interview_id     INTEGER NOT NULL REFERENCES mock_interviews(id) ON DELETE CASCADE,
+            question_id      INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+            question_content TEXT    NOT NULL,
+            user_answer      TEXT    NOT NULL DEFAULT '',
+            ai_comment       TEXT    NOT NULL DEFAULT '',
+            follow_up        TEXT    NOT NULL DEFAULT '',
+            follow_up_answer TEXT    NOT NULL DEFAULT '',
+            score            INTEGER NOT NULL DEFAULT 0,
+            created_at       TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+        );"
+    )
+    .execute(&pool)
+    .await?;
+
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM questions")  
         .fetch_one(&pool)  
         .await?;  
@@ -107,5 +250,66 @@ pub async fn init_db(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
         .await?;  
         println!("🚀 种子数据注入成功（含解析）！");  
     }  
+    seed_topics_from_questions(&pool).await?;
     Ok(pool)  
 }  
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_db_path(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("forgerust-{}-{}.db", name, nonce))
+    }
+
+    #[tokio::test]
+    async fn init_db_seeds_default_topics_and_allows_creating_new_topic() {
+        let db_path = test_db_path("topics");
+        let pool = init_db(db_path.clone()).await.unwrap();
+
+        let topics = list_topics(&pool).await.unwrap();
+        assert!(topics.iter().any(|topic| topic.name == "Rust"));
+        assert!(topics.iter().any(|topic| topic.name == "Java"));
+
+        create_topic(&pool, "Linux", "Operating system interview topic")
+            .await
+            .unwrap();
+
+        let topics = list_topics(&pool).await.unwrap();
+        let linux = topics.iter().find(|topic| topic.name == "Linux").unwrap();
+        assert_eq!(linux.description, "Operating system interview topic");
+
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn init_db_creates_mock_interview_tables() {
+        let db_path = test_db_path("mock-interview");
+        let pool = init_db(db_path.clone()).await.unwrap();
+
+        let interview_table: String = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mock_interviews'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let turn_table: String = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mock_interview_turns'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(interview_table, "mock_interviews");
+        assert_eq!(turn_table, "mock_interview_turns");
+
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
+    }
+}

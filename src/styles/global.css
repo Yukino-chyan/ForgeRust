@@ -1,0 +1,128 @@
+/* Global utility classes & form primitives used across the app. */
+
+.fr-input {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: var(--fs-14);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease),
+              box-shadow var(--dur-fast) var(--ease);
+}
+.fr-input:hover {
+  border-color: var(--border-strong);
+}
+.fr-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.fr-input::placeholder {
+  color: var(--text-subtle);
+}
+
+.fr-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+  user-select: none;
+  white-space: nowrap;
+}
+.fr-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.fr-btn-primary {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+.fr-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.fr-btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+.fr-btn-ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+
+.fr-btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--border);
+}
+.fr-btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+.fr-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-6);
+  box-shadow: var(--shadow-sm);
+}
+
+.fr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.fr-chip-accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+}
+
+.fr-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.fr-page {
+  flex: 1;
+  /* overflow-y: scroll 强制始终显示滚动条槽位（即使内容不足一屏），
+     避免内容多少变化时主区宽度抖动。scrollbar-gutter 在 WebView2 不可靠。 */
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+  padding: var(--sp-8);
+  width: 100%;
+  min-width: 0;
+}
+
+.fr-page-title {
+  font-size: var(--fs-20);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  margin-bottom: var(--sp-2);
+}
+.fr-page-subtitle {
+  font-size: var(--fs-13);
+  color: var(--text-muted);
+  margin-bottom: var(--sp-6);
+}

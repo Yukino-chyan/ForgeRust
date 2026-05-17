@@ -27,6 +27,9 @@ const searchTerm = ref("");       // 防抖后真正发起查询的值
 const pageSize = 30;
 const offset = ref(0);
 const loading = ref(false);
+const newTopicName = ref("");
+const creatingTopic = ref(false);
+const topicMessage = ref("");
 
 const { startImport } = useImportProgress();
 
@@ -84,6 +87,23 @@ function clearSearch() {
   searchTerm.value = "";
   offset.value = 0;
   refresh();
+}
+
+async function createTopic() {
+  const name = newTopicName.value.trim();
+  if (!name) return;
+  creatingTopic.value = true;
+  topicMessage.value = "";
+  try {
+    await invoke("create_topic", { name, description: null });
+    newTopicName.value = "";
+    topicMessage.value = "已创建";
+    await refresh();
+  } catch (e) {
+    topicMessage.value = String(e);
+  } finally {
+    creatingTopic.value = false;
+  }
 }
 
 async function nextPage() {
@@ -161,6 +181,21 @@ function difficultyLabel(d: number): string {
       <button v-if="searchInput" class="search-clear" title="清空搜索" @click="clearSearch">
         <Icon name="X" :size="12" />
       </button>
+    </div>
+
+    <div class="create-topic">
+      <input
+        v-model="newTopicName"
+        class="fr-input create-topic-input"
+        type="text"
+        placeholder="新建考点，例如 Linux"
+        @keyup.enter="createTopic"
+      />
+      <button class="fr-btn fr-btn-ghost" :disabled="creatingTopic || !newTopicName.trim()" @click="createTopic">
+        <Icon name="Plus" :size="14" />
+        <span>新建考点</span>
+      </button>
+      <span v-if="topicMessage" class="topic-msg">{{ topicMessage }}</span>
     </div>
 
     <div class="toolbar">
@@ -283,6 +318,20 @@ function difficultyLabel(d: number): string {
 .search-clear:hover {
   color: var(--text);
   background: var(--surface-2);
+}
+
+.create-topic {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-4);
+}
+.create-topic-input {
+  max-width: 280px;
+}
+.topic-msg {
+  font-size: var(--fs-12);
+  color: var(--text-subtle);
 }
 
 .toolbar {

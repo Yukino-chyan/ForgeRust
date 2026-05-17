@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, inject, computed } from "vue";
+import { ref, inject, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Icon from "./ui/Icon.vue";
@@ -29,6 +29,13 @@ interface PreviewQuestion extends GeneratedQuestion {
   errorMsg: string;
 }
 
+interface Topic {
+  id: number;
+  name: string;
+  description: string;
+  created_at: string;
+}
+
 const apiKey = inject<any>("apiKey");
 
 const TOPICS = ["Java", "Rust", "操作系统", "计算机网络", "数据库", "数据结构", "其他"];
@@ -46,6 +53,10 @@ const DIFFICULTIES = [
 ];
 
 const topic = ref("Java");
+const topics = ref<Topic[]>([]);
+const newTopicName = ref("");
+const isCreatingTopic = ref(false);
+const topicMessage = ref("");
 const questionType = ref("ESSAY");
 const difficulty = ref(3);
 const count = ref(5);
@@ -61,6 +72,42 @@ const questions = ref<PreviewQuestion[]>([]);
 const saveStatus = ref<"idle" | "saving" | "done">("idle");
 const saveCount = ref(0);
 const allSelected = ref(true);
+
+async function loadTopics() {
+  topics.value = await invoke<Topic[]>("list_topics");
+  if (topics.value.length === 0) {
+    topics.value = TOPICS.map((name, index) => ({ id: index + 1, name, description: "", created_at: "" }));
+  }
+  if (!topics.value.some((item) => item.name === topic.value) && topics.value.length > 0) {
+    topic.value = topics.value[0].name;
+  }
+}
+
+onMounted(async () => {
+  try {
+    await loadTopics();
+  } catch (e) {
+    console.error("读取考点失败", e);
+  }
+});
+
+async function createTopic() {
+  const name = newTopicName.value.trim();
+  if (!name) return;
+  isCreatingTopic.value = true;
+  topicMessage.value = "";
+  try {
+    const created = await invoke<Topic>("create_topic", { name, description: null });
+    await loadTopics();
+    topic.value = created.name;
+    newTopicName.value = "";
+    topicMessage.value = "已创建";
+  } catch (e) {
+    topicMessage.value = String(e);
+  } finally {
+    isCreatingTopic.value = false;
+  }
+}
 
 function toggleAll() {
   allSelected.value = !allSelected.value;
@@ -165,11 +212,25 @@ function difficultyStar(n: number) {
         <label>考点方向</label>
         <div class="chip-row">
           <button
-            v-for="t in TOPICS"
-            :key="t"
-            :class="['tag-pill', { active: topic === t }]"
-            @click="topic = t"
-          >{{ t }}</button>
+            v-for="t in topics"
+            :key="t.id"
+            :class="['tag-pill', { active: topic === t.name }]"
+            @click="topic = t.name"
+          >{{ t.name }}</button>
+        </div>
+        <div class="new-topic-row">
+          <input
+            v-model="newTopicName"
+            class="fr-input new-topic-input"
+            type="text"
+            placeholder="新建考点，例如 Linux"
+            @keyup.enter="createTopic"
+          />
+          <button class="fr-btn fr-btn-ghost" :disabled="isCreatingTopic || !newTopicName.trim()" @click="createTopic">
+            <Icon name="Plus" :size="14" />
+            <span>新建</span>
+          </button>
+          <span v-if="topicMessage" class="topic-msg">{{ topicMessage }}</span>
         </div>
       </div>
 
@@ -382,6 +443,17 @@ function difficultyStar(n: number) {
 }
 
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.new-topic-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.new-topic-input { max-width: 260px; }
+.topic-msg {
+  font-size: var(--fs-12);
+  color: var(--text-subtle);
+}
 .tag-pill {
   padding: 6px 12px;
   border-radius: 999px;

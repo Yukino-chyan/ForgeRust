@@ -58,9 +58,48 @@ async fn call_api(
     }
 }
 
+pub async fn generate_answer_and_explanation_with_tags(
+    api_url: &str,
+    api_key: &str,
+    allowed_tags: &[String],
+    question_type: &str,
+    content: &str,
+    options: Option<&str>,
+) -> Result<(String, String, String), String> {
+    let fallback_tags = vec!["Java".to_string(), "Rust".to_string(), "其他".to_string()];
+    let tags = if allowed_tags.is_empty() {
+        &fallback_tags
+    } else {
+        allowed_tags
+    };
+    let tags_context = tags.join(", ");
+    let system_prompt = format!(
+        "你是 IT 面试题解析助手。请根据给定题目生成标准答案、解析，并从候选考点中选择最合适的一个。候选考点只能是：[{}]。只返回 JSON：{{\"standard_answer\":\"...\",\"explanation\":\"...\",\"tag\":\"...\"}}",
+        tags_context
+    );
+    let user_prompt = format!(
+        "题型：{}\n题目：{}\n选项：{}",
+        question_type,
+        content,
+        options.unwrap_or("")
+    );
+
+    let raw = call_api(api_url, api_key, &system_prompt, &user_prompt, 0.3, 1024).await?;
+    let parsed: Value = serde_json::from_str(clean_json(&raw))
+        .map_err(|e| format!("JSON 解析失败: {}，原始内容: {}", e, raw))?;
+
+    let ans = parsed["standard_answer"].as_str().unwrap_or("").to_string();
+    let exp = parsed["explanation"].as_str().unwrap_or("").to_string();
+    let tag = parsed["tag"].as_str().unwrap_or("其他").to_string();
+
+    Ok((ans, exp, tag))
+}
+
+#[allow(dead_code, unused_variables)]
 pub async fn generate_answer_and_explanation(
     api_url: &str,
     api_key: &str,
+    allowed_tags: &[String],
     question_type: &str,
     content: &str,
     options: Option<&str>,
@@ -217,4 +256,47 @@ pub async fn generate_single_question(
         tags: topic.to_string(),
         difficulty,
     })
+}
+
+pub async fn evaluate_mock_interview_answer(
+    api_url: &str,
+    api_key: &str,
+    question: &str,
+    standard_answer: &str,
+    user_answer: &str,
+) -> Result<(i32, String, String), String> {
+    let system_prompt = concat!(
+        "你是严谨但友好的技术面试官。请评价候选人的回答，给出 0-100 分，",
+        "指出关键问题，并提出一个简短追问。只返回 JSON：",
+        r#"{"score":80,"comment":"...","follow_up":"..."}"#
+    );
+    let user_prompt = format!(
+        "面试题：{}\n\n参考答案：{}\n\n候选人回答：{}",
+        question, standard_answer, user_answer
+    );
+    let raw = call_api(api_url, api_key, system_prompt, &user_prompt, 0.35, 1024).await?;
+    let parsed: Value = serde_json::from_str(clean_json(&raw))
+        .map_err(|e| format!("AI 面试评价 JSON 解析失败: {}，原始内容: {}", e, raw))?;
+
+    let score = parsed["score"].as_i64().unwrap_or(0).clamp(0, 100) as i32;
+    let comment = parsed["comment"].as_str().unwrap_or("").trim().to_string();
+    let follow_up = parsed["follow_up"].as_str().unwrap_or("").trim().to_string();
+
+    Ok((
+        score,
+        if comment.is_empty() { "AI 未返回点评。".into() } else { comment },
+        if follow_up.is_empty() { "请再补充一个你认为最关键的细节。".into() } else { follow_up },
+    ))
+}
+
+pub async fn summarize_mock_interview(
+    api_url: &str,
+    api_key: &str,
+    transcript: &str,
+) -> Result<String, String> {
+    let system_prompt = concat!(
+        "你是技术面试复盘助手。请基于面试记录生成简短中文总结，包含整体表现、",
+        "薄弱知识点、表达建议和下一步复习建议。控制在 180 字以内。"
+    );
+    call_api(api_url, api_key, system_prompt, transcript, 0.4, 1024).await
 }

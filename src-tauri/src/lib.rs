@@ -6,7 +6,8 @@ mod config;
 use crate::config::AppConfig;
 use crate::models::{
     DashboardStats, DayPoint, EvaluateResponse, GeneratedQuestion, GenerateProgress,
-    ImportProgress, ImportQuestion, ImportResult, Question, SaveRecordInput, SessionRecord,
+    ImportProgress, ImportQuestion, ImportResult, MockEvaluation, MockInterviewReport,
+    MockInterviewStart, MockInterviewTurn, Question, SaveRecordInput, SessionRecord, Topic,
     TagStat, WrongQuestion,
 };
 use sqlx::SqlitePool;
@@ -159,6 +160,211 @@ async fn generate_interview_from_ids(
 }
 
 // ── 题库命令 ──────────────────────────────────────────────
+
+#[tauri::command]
+async fn list_topics(
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<Topic>, String> {
+    db::list_topics(&pool)
+        .await
+        .map_err(|e| format!("读取考点失败: {}", e))
+}
+
+#[tauri::command]
+async fn create_topic(
+    name: String,
+    description: Option<String>,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Topic, String> {
+    db::create_topic(&pool, &name, description.as_deref().unwrap_or("")).await
+}
+
+#[tauri::command]
+async fn start_mock_interview(
+    tags: Vec<String>,
+    count: u32,
+    difficulty: Option<i32>,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<MockInterviewStart, String> {
+    let count = count.max(1).min(20) as i64;
+    let difficulty = difficulty.unwrap_or(5).clamp(1, 5);
+    let mut sql = String::from("SELECT * FROM questions WHERE difficulty <= ?");
+    let clean_tags: Vec<String> = tags
+        .into_iter()
+        .map(|tag| tag.trim().to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect();
+
+    if !clean_tags.is_empty() {
+        let filters = clean_tags.iter().map(|_| "tags LIKE ?").collect::<Vec<_>>().join(" OR ");
+        sql.push_str(&format!(" AND ({})", filters));
+    }
+    sql.push_str(" ORDER BY RANDOM() LIMIT ?");
+
+    let mut query = sqlx::query_as::<_, Question>(&sql).bind(difficulty);
+    for tag in &clean_tags {
+        query = query.bind(format!("%{}%", tag));
+    }
+    query = query.bind(count);
+
+    let questions = query
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| format!("生成模拟面试题失败: {}", e))?;
+
+    if questions.is_empty() {
+        return Err("当前条件下没有可用题目，请换一个考点或难度。".into());
+    }
+
+    let interview_id: i64 = sqlx::query_scalar(
+        "INSERT INTO mock_interviews (tags, question_count, status)
+         VALUES (?, ?, 'active')
+         RETURNING id",
+    )
+    .bind(clean_tags.join(","))
+    .bind(questions.len() as i64)
+    .fetch_one(&*pool)
+    .await
+    .map_err(|e| format!("创建模拟面试失败: {}", e))?;
+
+    Ok(MockInterviewStart { interview_id, questions })
+}
+
+#[tauri::command]
+async fn submit_mock_answer(
+    interview_id: i64,
+    question_id: i32,
+    user_answer: String,
+    pool: tauri::State<'_, SqlitePool>,
+    config: tauri::State<'_, Mutex<AppConfig>>,
+) -> Result<MockEvaluation, String> {
+    if user_answer.trim().is_empty() {
+        return Err("回答不能为空。".into());
+    }
+
+    let question = sqlx::query_as::<_, Question>("SELECT * FROM questions WHERE id = ?")
+        .bind(question_id)
+        .fetch_one(&*pool)
+        .await
+        .map_err(|e| format!("读取题目失败: {}", e))?;
+
+    let (api_url, api_key) = {
+        let cfg = config.lock().map_err(|e| e.to_string())?;
+        (cfg.api_url.clone(), cfg.api_key.clone())
+    };
+
+    let (score, comment, follow_up) = llm_client::evaluate_mock_interview_answer(
+        &api_url,
+        &api_key,
+        &question.content,
+        &question.standard_answer,
+        &user_answer,
+    )
+    .await?;
+
+    let turn_id: i64 = sqlx::query_scalar(
+        "INSERT INTO mock_interview_turns
+            (interview_id, question_id, question_content, user_answer, ai_comment, follow_up, score)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         RETURNING id",
+    )
+    .bind(interview_id)
+    .bind(question_id)
+    .bind(&question.content)
+    .bind(user_answer.trim())
+    .bind(&comment)
+    .bind(&follow_up)
+    .bind(score)
+    .fetch_one(&*pool)
+    .await
+    .map_err(|e| format!("保存模拟面试回答失败: {}", e))?;
+
+    Ok(MockEvaluation { turn_id, score, comment, follow_up })
+}
+
+#[tauri::command]
+async fn submit_mock_follow_up(
+    turn_id: i64,
+    follow_up_answer: String,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<(), String> {
+    sqlx::query("UPDATE mock_interview_turns SET follow_up_answer = ? WHERE id = ?")
+        .bind(follow_up_answer.trim())
+        .bind(turn_id)
+        .execute(&*pool)
+        .await
+        .map_err(|e| format!("保存追问回答失败: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn finish_mock_interview(
+    interview_id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+    config: tauri::State<'_, Mutex<AppConfig>>,
+) -> Result<MockInterviewReport, String> {
+    let turns = sqlx::query_as::<_, MockInterviewTurn>(
+        "SELECT id, interview_id, question_id, question_content, user_answer, ai_comment,
+                follow_up, follow_up_answer, score, created_at
+         FROM mock_interview_turns
+         WHERE interview_id = ?
+         ORDER BY id ASC",
+    )
+    .bind(interview_id)
+    .fetch_all(&*pool)
+    .await
+    .map_err(|e| format!("读取模拟面试记录失败: {}", e))?;
+
+    let average_score = if turns.is_empty() {
+        0.0
+    } else {
+        turns.iter().map(|turn| turn.score as f64).sum::<f64>() / turns.len() as f64
+    };
+
+    let transcript = turns
+        .iter()
+        .map(|turn| {
+            format!(
+                "题目：{}\n回答：{}\n点评：{}\n追问：{}\n追问回答：{}\n得分：{}",
+                turn.question_content,
+                turn.user_answer,
+                turn.ai_comment,
+                turn.follow_up,
+                turn.follow_up_answer,
+                turn.score
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let (api_url, api_key) = {
+        let cfg = config.lock().map_err(|e| e.to_string())?;
+        (cfg.api_url.clone(), cfg.api_key.clone())
+    };
+    let summary = llm_client::summarize_mock_interview(&api_url, &api_key, &transcript)
+        .await
+        .unwrap_or_else(|_| {
+            format!(
+                "本次模拟面试共完成 {} 题，平均分 {:.1}。建议复盘低分题并补充关键概念。",
+                turns.len(),
+                average_score
+            )
+        });
+
+    sqlx::query(
+        "UPDATE mock_interviews
+         SET ended_at = datetime('now', 'localtime'), average_score = ?, summary = ?, status = 'finished'
+         WHERE id = ?",
+    )
+    .bind(average_score)
+    .bind(&summary)
+    .bind(interview_id)
+    .execute(&*pool)
+    .await
+    .map_err(|e| format!("保存模拟面试总结失败: {}", e))?;
+
+    Ok(MockInterviewReport { interview_id, average_score, summary, turns })
+}
 
 #[tauri::command]
 async fn get_random_question(
@@ -329,6 +535,12 @@ async fn import_questions_from_file(
         let cfg = config.lock().map_err(|e| e.to_string())?;
         (cfg.api_url.clone(), cfg.api_key.clone())
     };
+    let topic_candidates: Vec<String> = db::list_topics(&pool)
+        .await
+        .map_err(|e| format!("读取考点失败: {}", e))?
+        .into_iter()
+        .map(|topic| topic.name)
+        .collect();
 
     let pool_clone = (*pool).clone();
     tokio::spawn(async move {
@@ -350,9 +562,10 @@ async fn import_questions_from_file(
 
             let (ans, exp, tag) = if needs_ai {
                 let options_text = item.options.as_ref().map(|o| o.join(", "));
-                match llm_client::generate_answer_and_explanation(
+                match llm_client::generate_answer_and_explanation_with_tags(
                     &api_url,
                     &api_key,
+                    &topic_candidates,
                     &item.question_type,
                     &item.content,
                     options_text.as_deref(),
@@ -611,12 +824,18 @@ async fn count_questions(
 async fn get_all_tags(
     pool: tauri::State<'_, SqlitePool>,
 ) -> Result<Vec<String>, String> {
+    let topics = db::list_topics(&pool)
+        .await
+        .map_err(|e| format!("读取考点失败: {}", e))?;
     let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT tags FROM questions")
         .fetch_all(&*pool)
         .await
         .map_err(|e| format!("查询标签失败: {}", e))?;
 
     let mut tag_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for topic in topics {
+        tag_set.insert(topic.name);
+    }
     for (tags_str,) in rows {
         for tag in tags_str.split(',') {
             let t = tag.trim().to_string();
@@ -635,12 +854,18 @@ async fn get_all_tags(
 async fn get_tag_counts(
     pool: tauri::State<'_, SqlitePool>,
 ) -> Result<std::collections::HashMap<String, usize>, String> {
+    let topics = db::list_topics(&pool)
+        .await
+        .map_err(|e| format!("读取考点失败: {}", e))?;
     let rows: Vec<(String,)> = sqlx::query_as("SELECT tags FROM questions")
         .fetch_all(&*pool)
         .await
         .map_err(|e| format!("查询标签失败: {}", e))?;
 
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for topic in topics {
+        counts.entry(topic.name).or_insert(0);
+    }
     for (tags_str,) in rows {
         for tag in tags_str.split(',') {
             let t = tag.trim().to_string();
@@ -964,6 +1189,12 @@ pub fn run() {
             get_random_question,
             generate_interview,
             generate_interview_from_ids,
+            list_topics,
+            create_topic,
+            start_mock_interview,
+            submit_mock_answer,
+            submit_mock_follow_up,
+            finish_mock_interview,
             evaluate_answer,
             import_questions_from_file,
             get_all_tags,

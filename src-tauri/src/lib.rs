@@ -297,6 +297,31 @@ async fn submit_mock_follow_up(
     Ok(())
 }
 
+// 跳过的题目也记一条 turn（0 分、未作答），否则面试报告会漏算、误判表现
+const SKIPPED_MARK: &str = "（跳过未作答）";
+
+#[tauri::command]
+async fn record_skipped_question(
+    interview_id: i64,
+    question_id: i32,
+    question_content: String,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO mock_interview_turns
+            (interview_id, question_id, question_content, user_answer, ai_comment, follow_up, follow_up_answer, score)
+         VALUES (?, ?, ?, ?, '', '', '', 0)",
+    )
+    .bind(interview_id)
+    .bind(question_id)
+    .bind(&question_content)
+    .bind(SKIPPED_MARK)
+    .execute(&*pool)
+    .await
+    .map_err(|e| format!("记录跳过题目失败: {}", e))?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn finish_mock_interview(
     interview_id: i64,
@@ -321,35 +346,50 @@ async fn finish_mock_interview(
         turns.iter().map(|turn| turn.score as f64).sum::<f64>() / turns.len() as f64
     };
 
-    let transcript = turns
+    // 真正作答过的题（排除跳过 / 空回答），用于判断这场面试是否有可评估内容
+    let answered_count = turns
         .iter()
-        .map(|turn| {
-            format!(
-                "题目：{}\n回答：{}\n点评：{}\n追问：{}\n追问回答：{}\n得分：{}",
-                turn.question_content,
-                turn.user_answer,
-                turn.ai_comment,
-                turn.follow_up,
-                turn.follow_up_answer,
-                turn.score
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
+        .filter(|turn| turn.user_answer.trim() != SKIPPED_MARK && !turn.user_answer.trim().is_empty())
+        .count();
 
-    let (api_url, api_key) = {
-        let cfg = config.lock().map_err(|e| e.to_string())?;
-        (cfg.api_url.clone(), cfg.api_key.clone())
+    let summary = if answered_count == 0 {
+        // 全部跳过 / 没有任何作答：诚实反馈，不调用 AI（否则会凭空夸奖）
+        format!(
+            "本次面试共 {} 道题，但全部跳过、没有任何作答，无法评估表现。建议正式作答后再生成复盘。",
+            turns.len()
+        )
+    } else {
+        let transcript = turns
+            .iter()
+            .map(|turn| {
+                format!(
+                    "题目：{}\n回答：{}\n点评：{}\n追问：{}\n追问回答：{}\n得分：{}",
+                    turn.question_content,
+                    turn.user_answer,
+                    turn.ai_comment,
+                    turn.follow_up,
+                    turn.follow_up_answer,
+                    turn.score
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let (api_url, api_key) = {
+            let cfg = config.lock().map_err(|e| e.to_string())?;
+            (cfg.api_url.clone(), cfg.api_key.clone())
+        };
+        llm_client::summarize_mock_interview(&api_url, &api_key, &transcript)
+            .await
+            .unwrap_or_else(|_| {
+                format!(
+                    "本次模拟面试共完成 {} 题（其中作答 {} 题），平均分 {:.1}。建议复盘低分题并补充关键概念。",
+                    turns.len(),
+                    answered_count,
+                    average_score
+                )
+            })
     };
-    let summary = llm_client::summarize_mock_interview(&api_url, &api_key, &transcript)
-        .await
-        .unwrap_or_else(|_| {
-            format!(
-                "本次模拟面试共完成 {} 题，平均分 {:.1}。建议复盘低分题并补充关键概念。",
-                turns.len(),
-                average_score
-            )
-        });
 
     sqlx::query(
         "UPDATE mock_interviews
@@ -1194,6 +1234,7 @@ pub fn run() {
             start_mock_interview,
             submit_mock_answer,
             submit_mock_follow_up,
+            record_skipped_question,
             finish_mock_interview,
             evaluate_answer,
             import_questions_from_file,

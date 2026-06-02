@@ -85,9 +85,26 @@ let clockTimer: ReturnType<typeof setInterval> | null = null;
 // 退出面试的二次确认
 const confirmingExit = ref(false);
 
+const difficultyLevels = [
+  { value: 1, label: "入门" },
+  { value: 2, label: "基础" },
+  { value: 3, label: "中等" },
+  { value: 4, label: "进阶" },
+  { value: 5, label: "深入" },
+];
+const countPresets = [3, 5, 8, 10];
+
 const hasApiKey = computed(() => !!apiKey.value.trim());
 const currentQuestion = computed(() => questions.value[currentIndex.value]);
 const canStart = computed(() => hasApiKey.value && selectedTags.value.length > 0 && count.value > 0);
+
+const difficultyLabel = computed(
+  () => difficultyLevels.find((d) => d.value === difficulty.value)?.label ?? "—"
+);
+const setupSummary = computed(() => {
+  const tagsText = selectedTags.value.length ? selectedTags.value.join("、") : "未选考点";
+  return `本次：${count.value || 0} 题 · ${difficultyLabel.value} · 考点 ${tagsText}`;
+});
 
 // 进入追问阶段：已提交本题主回答、拿到面试官追问
 const isFollowUpPhase = computed(() => currentEvaluation.value !== null);
@@ -331,51 +348,88 @@ function scoreClass(score: number) {
       <span v-if="stage === 'interview'" class="mode-chip">面试进行中</span>
     </header>
 
-    <section v-if="stage === 'setup'" class="fr-card setup-panel">
-      <div class="field">
-        <label>考点范围</label>
-        <div class="tag-grid">
-          <button
-            v-for="tag in tags"
-            :key="tag"
-            :class="['tag-pill', { active: selectedTags.includes(tag), empty: (tagCounts[tag] ?? 0) === 0 }]"
-            :disabled="(tagCounts[tag] ?? 0) === 0"
-            @click="toggleTag(tag)"
-          >
-            {{ tag }}
-            <span class="count">{{ tagCounts[tag] ?? 0 }}</span>
+    <section v-if="stage === 'setup'" class="setup-panel">
+      <!-- Hero 引导 -->
+      <div class="setup-hero">
+        <div class="hero-icon">
+          <Icon name="Mic" :size="22" />
+        </div>
+        <div>
+          <h2 class="hero-title">准备好开始模拟面试了吗？</h2>
+          <p class="hero-sub">挑选考点和难度，AI 面试官将与你一问一答。</p>
+        </div>
+      </div>
+
+      <div class="fr-card setup-card">
+        <!-- ① 考点 -->
+        <div class="field">
+          <label class="step-label"><span class="step-no">1</span>选择考点</label>
+          <div class="tag-grid">
+            <button
+              v-for="tag in tags"
+              :key="tag"
+              :class="['tag-pill', { active: selectedTags.includes(tag), empty: (tagCounts[tag] ?? 0) === 0 }]"
+              :disabled="(tagCounts[tag] ?? 0) === 0"
+              @click="toggleTag(tag)"
+            >
+              {{ tag }}
+              <span class="count">{{ tagCounts[tag] ?? 0 }}</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- ② 难度 -->
+        <div class="field">
+          <label class="step-label"><span class="step-no">2</span>最高难度</label>
+          <div class="chip-row">
+            <button
+              v-for="level in difficultyLevels"
+              :key="level.value"
+              :class="['choice-chip', { active: difficulty === level.value }]"
+              @click="difficulty = level.value"
+            >
+              {{ level.label }}
+            </button>
+          </div>
+        </div>
+
+        <!-- ③ 题量 -->
+        <div class="field">
+          <label class="step-label"><span class="step-no">3</span>题量</label>
+          <div class="chip-row">
+            <button
+              v-for="preset in countPresets"
+              :key="preset"
+              :class="['choice-chip', { active: count === preset }]"
+              @click="count = preset"
+            >
+              {{ preset }}
+            </button>
+            <input
+              v-model.number="count"
+              class="fr-input count-input"
+              type="number"
+              min="1"
+              max="20"
+              aria-label="自定义题量"
+            />
+          </div>
+        </div>
+
+        <div v-if="!hasApiKey" class="notice">
+          <Icon name="AlertTriangle" :size="16" />
+          <span>模拟面试需要先在设置页配置 API Key。</span>
+        </div>
+        <p v-if="errorMsg" class="error-msg">{{ errorMsg }}</p>
+
+        <!-- 摘要 + 开始 -->
+        <div class="setup-footer">
+          <span class="setup-summary">{{ setupSummary }}</span>
+          <button class="fr-btn fr-btn-primary" :disabled="!canStart || loading" @click="startInterview">
+            <Icon name="MessageSquare" :size="14" />
+            <span>{{ loading ? "准备中..." : "开始面试" }}</span>
           </button>
         </div>
-      </div>
-
-      <div class="setup-grid">
-        <div class="field">
-          <label>题量</label>
-          <input v-model.number="count" class="fr-input" type="number" min="1" max="20" />
-        </div>
-        <div class="field">
-          <label>最高难度</label>
-          <select v-model.number="difficulty" class="fr-input">
-            <option :value="1">1 - 入门</option>
-            <option :value="2">2 - 基础</option>
-            <option :value="3">3 - 中等</option>
-            <option :value="4">4 - 进阶</option>
-            <option :value="5">5 - 深入</option>
-          </select>
-        </div>
-      </div>
-
-      <div v-if="!hasApiKey" class="notice">
-        <Icon name="AlertTriangle" :size="16" />
-        <span>模拟面试需要先在设置页配置 API Key。</span>
-      </div>
-      <p v-if="errorMsg" class="error-msg">{{ errorMsg }}</p>
-
-      <div class="actions">
-        <button class="fr-btn fr-btn-primary" :disabled="!canStart || loading" @click="startInterview">
-          <Icon name="MessageSquare" :size="14" />
-          <span>{{ loading ? "准备中..." : "开始模拟面试" }}</span>
-        </button>
       </div>
     </section>
 
@@ -560,10 +614,98 @@ function scoreClass(score: number) {
   cursor: not-allowed;
 }
 .count { color: var(--text-subtle); }
-.setup-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+
+/* ── setup hero ── */
+.setup-hero {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.hero-icon {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hero-title {
+  font-size: var(--fs-16);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.hero-sub {
+  font-size: var(--fs-12);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* ── setup card ── */
+.setup-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+.step-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.step-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.choice-chip {
+  flex: 1;
+  min-width: 56px;
+  padding: 7px 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-13);
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+}
+.choice-chip:hover { border-color: var(--border-strong); }
+.choice-chip.active {
+  color: var(--text-on-accent);
+  background: var(--accent);
+  border-color: transparent;
+}
+.count-input {
+  flex: 0 0 72px;
+  width: 72px;
+}
+.setup-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+.setup-summary {
+  font-size: var(--fs-13);
+  color: var(--text-muted);
 }
 .notice, .error-msg {
   display: flex;
@@ -573,7 +715,6 @@ function scoreClass(score: number) {
 }
 .notice { color: var(--warning); }
 .error-msg { color: var(--danger); }
-.actions { display: flex; justify-content: flex-end; }
 /* ── 退出面试 ── */
 .interview-bar {
   display: flex;
@@ -810,9 +951,16 @@ function scoreClass(score: number) {
   font-size: var(--fs-13);
 }
 @media (max-width: 760px) {
-  .setup-grid, .report-hero {
-    grid-template-columns: 1fr;
+  .report-hero {
     flex-direction: column;
+  }
+  .video-bar {
+    flex-direction: column;
+  }
+  .candidate-tile {
+    width: 100%;
+    height: 80px;
+    flex-direction: row;
   }
 }
 </style>

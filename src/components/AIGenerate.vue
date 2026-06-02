@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, inject, computed, onMounted } from "vue";
+import { ref, inject, computed, onMounted, onBeforeUnmount } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Icon from "./ui/Icon.vue";
@@ -36,6 +36,8 @@ interface Topic {
   created_at: string;
 }
 
+const props = defineProps<{ isActive?: boolean }>();
+
 const apiKey = inject<any>("apiKey");
 
 const TOPICS = ["Java", "Rust", "操作系统", "计算机网络", "数据库", "数据结构", "其他"];
@@ -68,6 +70,8 @@ const requirementOverflow = computed(() => requirement.value.length > REQUIREMEN
 const isGenerating = ref(false);
 const progress = ref<GenerateProgress>({ current: 0, total: 0, question: null, message: "", is_finished: false, error: null });
 const questions = ref<PreviewQuestion[]>([]);
+const currentIdx = ref(0);
+const current = computed(() => questions.value[currentIdx.value] ?? null);
 
 const saveStatus = ref<"idle" | "saving" | "done">("idle");
 const saveCount = ref(0);
@@ -122,6 +126,7 @@ async function startGenerate() {
   isGenerating.value = true;
   saveStatus.value = "idle";
   questions.value = [];
+  currentIdx.value = 0;
   progress.value = { current: 0, total: count.value, question: null, message: "准备中...", is_finished: false, error: null };
 
   const unlisten = await listen<GenerateProgress>("ai-generate-progress", (event) => {
@@ -143,6 +148,11 @@ async function startGenerate() {
         failed: true,
         errorMsg: data.error,
       });
+    }
+
+    // 每收到一题就翻到最新一题，生成完停在最后一题。
+    if (data.question || data.error) {
+      currentIdx.value = questions.value.length - 1;
     }
 
     if (data.is_finished) {
@@ -185,9 +195,31 @@ async function saveSelected() {
 
 function reset() {
   questions.value = [];
+  currentIdx.value = 0;
   saveStatus.value = "idle";
   progress.value = { current: 0, total: 0, question: null, message: "", is_finished: false, error: null };
 }
+
+function prevQuestion() {
+  if (currentIdx.value > 0) currentIdx.value--;
+}
+function nextQuestion() {
+  if (currentIdx.value < questions.value.length - 1) currentIdx.value++;
+}
+
+// ← / → 翻页；仅在本页激活、有题目、且焦点不在表单控件时生效。
+function onKeydown(e: KeyboardEvent) {
+  if (!props.isActive || questions.value.length === 0 || saveStatus.value === "done") return;
+  const tag = (document.activeElement?.tagName ?? "").toUpperCase();
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (e.key === "ArrowLeft") {
+    prevQuestion();
+  } else if (e.key === "ArrowRight") {
+    nextQuestion();
+  }
+}
+onMounted(() => window.addEventListener("keydown", onKeydown));
+onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
 function progressPct() {
   if (!progress.value.total) return 0;
@@ -339,51 +371,59 @@ function difficultyStar(n: number) {
         </div>
       </div>
 
-      <div class="q-list">
-        <div
-          v-for="(q, idx) in questions"
-          :key="idx"
-          :class="['q-card', { failed: q.failed, selected: q.selected && !q.failed }]"
-        >
-          <div v-if="q.failed" class="q-failed">
+      <div v-if="current" class="q-stage">
+        <div :class="['q-card', { failed: current.failed, selected: current.selected && !current.failed }]">
+          <div v-if="current.failed" class="q-failed">
             <Icon name="AlertCircle" :size="14" />
-            <span>第 {{ idx + 1 }} 题生成失败：{{ q.errorMsg }}</span>
+            <span>第 {{ currentIdx + 1 }} 题生成失败：{{ current.errorMsg }}</span>
           </div>
 
           <template v-else>
             <div class="q-top">
               <label class="q-check">
-                <input type="checkbox" v-model="q.selected" />
-                <span class="q-num">第 {{ idx + 1 }} 题</span>
+                <input type="checkbox" v-model="current.selected" />
+                <span class="q-num">第 {{ currentIdx + 1 }} 题</span>
               </label>
               <div class="q-badges">
-                <span class="fr-chip">{{ TYPES.find(t => t.value === q.question_type)?.label }}</span>
-                <span class="fr-chip fr-chip-accent">{{ q.tags }}</span>
-                <span class="fr-chip">Lv.{{ q.difficulty }}</span>
+                <span class="fr-chip">{{ TYPES.find(t => t.value === current.question_type)?.label }}</span>
+                <span class="fr-chip fr-chip-accent">{{ current.tags }}</span>
+                <span class="fr-chip">Lv.{{ current.difficulty }}</span>
               </div>
             </div>
 
-            <div class="q-content">{{ q.content }}</div>
+            <div class="q-content">{{ current.content }}</div>
 
-            <div v-if="q.options && q.options.length" class="q-options">
+            <div v-if="current.options && current.options.length" class="q-options">
               <div
-                v-for="(opt, oi) in q.options"
+                v-for="(opt, oi) in current.options"
                 :key="oi"
-                :class="['q-opt', { correct: opt.startsWith(q.standard_answer[0] ?? '') }]"
+                :class="['q-opt', { correct: opt.startsWith(current.standard_answer[0] ?? '') }]"
               >{{ opt }}</div>
             </div>
 
             <div class="q-answer">
               <span class="answer-label">答案</span>
-              <span class="answer-val fr-mono">{{ q.standard_answer }}</span>
+              <span class="answer-val fr-mono">{{ current.standard_answer }}</span>
             </div>
 
             <details class="q-explain">
               <summary>查看解析</summary>
-              <p>{{ q.explanation }}</p>
+              <p>{{ current.explanation }}</p>
             </details>
           </template>
         </div>
+      </div>
+
+      <div class="q-pager">
+        <button class="fr-btn fr-btn-ghost" :disabled="currentIdx <= 0" @click="prevQuestion">
+          <Icon name="ChevronLeft" :size="14" />
+          <span>上一题</span>
+        </button>
+        <span class="q-pager-indicator fr-mono">{{ currentIdx + 1 }} / {{ questions.length }}</span>
+        <button class="fr-btn fr-btn-ghost" :disabled="currentIdx >= questions.length - 1" @click="nextQuestion">
+          <span>下一题</span>
+          <Icon name="ChevronRight" :size="14" />
+        </button>
       </div>
     </section>
   </div>
@@ -393,9 +433,12 @@ function difficultyStar(n: number) {
 .ai-gen {
   max-width: var(--content-max);
   margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
+}
+/* 块级布局：子项按自然高度堆叠并溢出，交给 .fr-page 的 overflow-y:scroll 滚动。
+   不可用 flex 列，否则 flex-shrink 会把子项压扁、内容被裁而无法滚动。
+   用相邻间距替代原来的 gap。 */
+.ai-gen > * + * {
+  margin-top: var(--sp-4);
 }
 
 .config {
@@ -590,11 +633,21 @@ function difficultyStar(n: number) {
 }
 .preview-actions { display: flex; gap: 8px; }
 
-.q-list {
+.q-stage {
   padding: var(--sp-3);
+}
+.q-pager {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.q-pager-indicator {
+  font-size: var(--fs-13);
+  color: var(--text-muted);
 }
 .q-card {
   padding: var(--sp-4);

@@ -112,9 +112,12 @@ async function save() {
 .settings {
   max-width: 720px;
   margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
+}
+/* 块级布局：子项按自然高度堆叠并溢出，交给 .fr-page 的 overflow-y:scroll 滚动。
+   不可用 flex 列，否则 flex-shrink 会把子项压扁、内容被裁而无法滚动。
+   用相邻间距替代原来的 gap。 */
+.settings > * + * {
+  margin-top: var(--sp-4);
 }
 
 .group {

@@ -106,6 +106,10 @@
 
 .fr-page {
   flex: 1;
+  /* 作为 .content（flex 列）的子项，默认 min-height:auto 会让本元素被内容撑高、
+     无法收缩到父级高度，导致 overflow 失效、内容被 .content 的 overflow:hidden 裁掉。
+     置 0 后才能稳定收缩到视口高度并让下面的 overflow-y:scroll 真正生效。 */
+  min-height: 0;
   /* overflow-y: scroll 强制始终显示滚动条槽位（即使内容不足一屏），
      避免内容多少变化时主区宽度抖动。scrollbar-gutter 在 WebView2 不可靠。 */
   overflow-y: scroll;

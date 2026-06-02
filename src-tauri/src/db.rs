@@ -66,6 +66,75 @@ pub async fn create_topic(
     .map_err(|e| format!("读取考点失败: {}", e))
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn create_question(
+    pool: &SqlitePool,
+    question_type: &str,
+    content: &str,
+    options: Option<&str>,
+    tags: &str,
+    difficulty: i32,
+    standard_answer: &str,
+    explanation: &str,
+) -> Result<i64, String> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err("题目内容不能为空".into());
+    }
+    sqlx::query_scalar::<_, i64>(
+        "INSERT INTO questions
+            (question_type, content, options, tags, difficulty, standard_answer, explanation)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         RETURNING id",
+    )
+    .bind(question_type)
+    .bind(content)
+    .bind(options)
+    .bind(tags)
+    .bind(difficulty)
+    .bind(standard_answer)
+    .bind(explanation)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("新增题目失败（可能题干重复）: {}", e))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn update_question(
+    pool: &SqlitePool,
+    id: i32,
+    question_type: &str,
+    content: &str,
+    options: Option<&str>,
+    tags: &str,
+    difficulty: i32,
+    standard_answer: &str,
+    explanation: &str,
+) -> Result<(), String> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err("题目内容不能为空".into());
+    }
+    sqlx::query(
+        "UPDATE questions
+         SET question_type = ?, content = ?, options = ?, tags = ?,
+             difficulty = ?, standard_answer = ?, explanation = ?
+         WHERE id = ?",
+    )
+    .bind(question_type)
+    .bind(content)
+    .bind(options)
+    .bind(tags)
+    .bind(difficulty)
+    .bind(standard_answer)
+    .bind(explanation)
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("更新题目失败（可能题干与其它题重复）: {}", e))?;
+    Ok(())
+}
+
 async fn seed_default_topics(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     for (name, description) in DEFAULT_TOPICS {
         sqlx::query(
@@ -308,6 +377,39 @@ mod tests {
 
         assert_eq!(interview_table, "mock_interviews");
         assert_eq!(turn_table, "mock_interview_turns");
+
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn create_and_update_question_roundtrip() {
+        let db_path = test_db_path("question-crud");
+        let pool = init_db(db_path.clone()).await.unwrap();
+
+        let id = create_question(
+            &pool, "ESSAY", "什么是所有权？", None, "Rust", 2,
+            "Rust 的所有权机制……", "解析……",
+        )
+        .await
+        .unwrap();
+        assert!(id > 0);
+
+        update_question(
+            &pool, id as i32, "ESSAY", "什么是所有权与借用？", None, "Rust", 3,
+            "更新后的答案", "更新后的解析",
+        )
+        .await
+        .unwrap();
+
+        let row: (String, i32) =
+            sqlx::query_as("SELECT content, difficulty FROM questions WHERE id = ?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(row.0, "什么是所有权与借用？");
+        assert_eq!(row.1, 3);
 
         pool.close().await;
         let _ = std::fs::remove_file(db_path);

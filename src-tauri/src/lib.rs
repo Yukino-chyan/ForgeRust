@@ -32,12 +32,14 @@ fn get_api_config(
 fn set_api_config(
     api_key: String,
     api_url: String,
+    model: String,
     config: tauri::State<'_, Mutex<AppConfig>>,
     config_dir: tauri::State<'_, ConfigDir>,
 ) -> Result<(), String> {
     let mut cfg = config.lock().map_err(|e| e.to_string())?;
     cfg.api_key = api_key;
     cfg.api_url = api_url;
+    cfg.model = if model.trim().is_empty() { cfg.model.clone() } else { model };
     cfg.save(&config_dir.0)
 }
 
@@ -248,14 +250,15 @@ async fn submit_mock_answer(
         .await
         .map_err(|e| format!("读取题目失败: {}", e))?;
 
-    let (api_url, api_key) = {
+    let (api_url, api_key, model) = {
         let cfg = config.lock().map_err(|e| e.to_string())?;
-        (cfg.api_url.clone(), cfg.api_key.clone())
+        (cfg.api_url.clone(), cfg.api_key.clone(), cfg.model.clone())
     };
 
     let (score, comment, follow_up) = llm_client::evaluate_mock_interview_answer(
         &api_url,
         &api_key,
+        &model,
         &question.content,
         &question.standard_answer,
         &user_answer,
@@ -375,11 +378,11 @@ async fn finish_mock_interview(
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let (api_url, api_key) = {
+        let (api_url, api_key, model) = {
             let cfg = config.lock().map_err(|e| e.to_string())?;
-            (cfg.api_url.clone(), cfg.api_key.clone())
+            (cfg.api_url.clone(), cfg.api_key.clone(), cfg.model.clone())
         };
-        llm_client::summarize_mock_interview(&api_url, &api_key, &transcript)
+        llm_client::summarize_mock_interview(&api_url, &api_key, &model, &transcript)
             .await
             .unwrap_or_else(|_| {
                 format!(
@@ -529,14 +532,15 @@ async fn evaluate_answer(
         }
 
         "ESSAY" | _ => {
-            let (api_url, api_key) = {
+            let (api_url, api_key, model) = {
                 let cfg = config.lock().map_err(|e| e.to_string())?;
-                (cfg.api_url.clone(), cfg.api_key.clone())
+                (cfg.api_url.clone(), cfg.api_key.clone(), cfg.model.clone())
             };
 
             let (score, ai_comment) = llm_client::evaluate_essay_answer(
                 &api_url,
                 &api_key,
+                &model,
                 &q.content,
                 &q.standard_answer,
                 &user_answer,
@@ -571,9 +575,9 @@ async fn import_questions_from_file(
         return Err("文件内无题目".into());
     }
 
-    let (api_url, api_key) = {
+    let (api_url, api_key, model) = {
         let cfg = config.lock().map_err(|e| e.to_string())?;
-        (cfg.api_url.clone(), cfg.api_key.clone())
+        (cfg.api_url.clone(), cfg.api_key.clone(), cfg.model.clone())
     };
     let topic_candidates: Vec<String> = db::list_topics(&pool)
         .await
@@ -605,6 +609,7 @@ async fn import_questions_from_file(
                 match llm_client::generate_answer_and_explanation_with_tags(
                     &api_url,
                     &api_key,
+                    &model,
                     &topic_candidates,
                     &item.question_type,
                     &item.content,
@@ -687,9 +692,9 @@ async fn generate_questions_by_ai(
     config: tauri::State<'_, Mutex<AppConfig>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (api_url, api_key) = {
+    let (api_url, api_key, model) = {
         let cfg = config.lock().map_err(|e| e.to_string())?;
-        (cfg.api_url.clone(), cfg.api_key.clone())
+        (cfg.api_url.clone(), cfg.api_key.clone(), cfg.model.clone())
     };
     let total = count as usize;
 
@@ -705,7 +710,7 @@ async fn generate_questions_by_ai(
             });
 
             match llm_client::generate_single_question(
-                &api_url, &api_key, &topic, &question_type, difficulty,
+                &api_url, &api_key, &model, &topic, &question_type, difficulty,
                 requirement.as_deref(),
             ).await {
                 Ok(q) => {

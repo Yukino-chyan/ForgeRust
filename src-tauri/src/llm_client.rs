@@ -12,6 +12,7 @@ fn clean_json(raw: &str) -> &str {
 async fn call_api(
     api_url: &str,
     api_key: &str,
+    model: &str,
     system_prompt: &str,
     user_prompt: &str,
     temperature: f64,
@@ -23,7 +24,7 @@ async fn call_api(
 
     let client = Client::new();
     let request_body = json!({
-        "model": "deepseek-chat",
+        "model": model,
         "messages": [
             { "role": "system", "content": system_prompt },
             { "role": "user",   "content": user_prompt   }
@@ -61,6 +62,7 @@ async fn call_api(
 pub async fn generate_answer_and_explanation_with_tags(
     api_url: &str,
     api_key: &str,
+    model: &str,
     allowed_tags: &[String],
     question_type: &str,
     content: &str,
@@ -84,7 +86,7 @@ pub async fn generate_answer_and_explanation_with_tags(
         options.unwrap_or("")
     );
 
-    let raw = call_api(api_url, api_key, &system_prompt, &user_prompt, 0.3, 1024).await?;
+    let raw = call_api(api_url, api_key, model, &system_prompt, &user_prompt, 0.3, 1024).await?;
     let parsed: Value = serde_json::from_str(clean_json(&raw))
         .map_err(|e| format!("JSON 解析失败: {}，原始内容: {}", e, raw))?;
 
@@ -99,6 +101,7 @@ pub async fn generate_answer_and_explanation_with_tags(
 pub async fn generate_answer_and_explanation(
     api_url: &str,
     api_key: &str,
+    model: &str,
     allowed_tags: &[String],
     question_type: &str,
     content: &str,
@@ -122,7 +125,7 @@ pub async fn generate_answer_and_explanation(
         options.unwrap_or("")
     );
 
-    let raw = call_api(api_url, api_key, &system_prompt, &user_prompt, 0.3, 1024).await?;
+    let raw = call_api(api_url, api_key, model, &system_prompt, &user_prompt, 0.3, 1024).await?;
 
     let parsed: Value = serde_json::from_str(clean_json(&raw))
         .map_err(|e| format!("JSON 解析失败: {}，原始内容: {}", e, raw))?;
@@ -137,6 +140,7 @@ pub async fn generate_answer_and_explanation(
 pub async fn evaluate_essay_answer(
     api_url: &str,
     api_key: &str,
+    model: &str,
     content: &str,
     standard_answer: &str,
     user_answer: &str,
@@ -153,7 +157,7 @@ pub async fn evaluate_essay_answer(
         content, standard_answer, user_answer
     );
 
-    let raw = call_api(api_url, api_key, system_prompt, &user_prompt, 0.3, 1024).await?;
+    let raw = call_api(api_url, api_key, model, system_prompt, &user_prompt, 0.3, 1024).await?;
 
     let parsed: Value = serde_json::from_str(clean_json(&raw))
         .map_err(|e| format!("AI 返回内容不是合法 JSON: {}，原始内容: {}", e, raw))?;
@@ -174,6 +178,7 @@ pub async fn evaluate_essay_answer(
 pub async fn generate_single_question(
     api_url: &str,
     api_key: &str,
+    model: &str,
     topic: &str,
     question_type: &str,
     difficulty: i32,
@@ -229,7 +234,7 @@ pub async fn generate_single_question(
         req_user = requirement_block_user,
     );
 
-    let raw = call_api(api_url, api_key, &system_prompt, &user_prompt, 0.75, 2048).await?;
+    let raw = call_api(api_url, api_key, model, &system_prompt, &user_prompt, 0.75, 2048).await?;
     let parsed: Value = serde_json::from_str(clean_json(&raw))
         .map_err(|e| format!("AI 返回格式异常: {}，原始: {}", e, raw))?;
 
@@ -261,6 +266,7 @@ pub async fn generate_single_question(
 pub async fn evaluate_mock_interview_answer(
     api_url: &str,
     api_key: &str,
+    model: &str,
     question: &str,
     standard_answer: &str,
     user_answer: &str,
@@ -274,7 +280,7 @@ pub async fn evaluate_mock_interview_answer(
         "面试题：{}\n\n参考答案：{}\n\n候选人回答：{}",
         question, standard_answer, user_answer
     );
-    let raw = call_api(api_url, api_key, system_prompt, &user_prompt, 0.35, 1024).await?;
+    let raw = call_api(api_url, api_key, model, system_prompt, &user_prompt, 0.35, 1024).await?;
     let parsed: Value = serde_json::from_str(clean_json(&raw))
         .map_err(|e| format!("AI 面试评价 JSON 解析失败: {}，原始内容: {}", e, raw))?;
 
@@ -292,11 +298,12 @@ pub async fn evaluate_mock_interview_answer(
 pub async fn summarize_mock_interview(
     api_url: &str,
     api_key: &str,
+    model: &str,
     transcript: &str,
 ) -> Result<String, String> {
     let system_prompt = concat!(
         "你是技术面试复盘助手。请基于面试记录生成简短中文总结，包含整体表现、",
         "薄弱知识点、表达建议和下一步复习建议。控制在 180 字以内。"
     );
-    call_api(api_url, api_key, system_prompt, transcript, 0.4, 1024).await
+    call_api(api_url, api_key, model, system_prompt, transcript, 0.4, 1024).await
 }

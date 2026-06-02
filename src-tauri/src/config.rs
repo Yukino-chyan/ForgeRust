@@ -5,6 +5,12 @@ use std::path::PathBuf;
 pub struct AppConfig {
     pub api_key: String,
     pub api_url: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+}
+
+fn default_model() -> String {
+    "deepseek-chat".into()
 }
 
 impl Default for AppConfig {
@@ -12,6 +18,7 @@ impl Default for AppConfig {
         Self {
             api_key: String::new(),
             api_url: "https://zenmux.ai/api/v1/chat/completions".into(),
+            model: default_model(),
         }
     }
 }

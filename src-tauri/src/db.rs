@@ -135,6 +135,38 @@ pub async fn update_question(
     Ok(())
 }
 
+pub async fn export_questions_json(pool: &SqlitePool) -> Result<String, String> {
+    let rows = sqlx::query_as::<_, crate::models::Question>(
+        "SELECT * FROM questions ORDER BY id ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("读取题库失败: {}", e))?;
+
+    let items: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|q| {
+            // DB 中 options 存为 JSON 字符串；导出成数组以与导入格式对齐
+            let options: serde_json::Value = q
+                .options
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            serde_json::json!({
+                "question_type": q.question_type,
+                "content": q.content,
+                "options": options,
+                "tags": q.tags,
+                "difficulty": q.difficulty,
+                "standard_answer": q.standard_answer,
+                "explanation": q.explanation,
+            })
+        })
+        .collect();
+
+    serde_json::to_string_pretty(&items).map_err(|e| format!("序列化失败: {}", e))
+}
+
 async fn seed_default_topics(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     for (name, description) in DEFAULT_TOPICS {
         sqlx::query(
@@ -410,6 +442,20 @@ mod tests {
                 .unwrap();
         assert_eq!(row.0, "什么是所有权与借用？");
         assert_eq!(row.1, 3);
+
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn export_questions_json_contains_seed() {
+        let db_path = test_db_path("export");
+        let pool = init_db(db_path.clone()).await.unwrap();
+
+        let json = export_questions_json(&pool).await.unwrap();
+        // init_db 注入了 3 道种子题，导出应为非空 JSON 数组且含已知题干
+        assert!(json.trim_start().starts_with('['));
+        assert!(json.contains("进程与线程"));
 
         pool.close().await;
         let _ = std::fs::remove_file(db_path);

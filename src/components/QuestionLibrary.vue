@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import Icon from "./ui/Icon.vue";
+import QuestionModal from "./ui/QuestionModal.vue";
 import { useImportProgress } from "../composables/useImportProgress";
 
 interface Question {
@@ -32,6 +33,38 @@ const creatingTopic = ref(false);
 const topicMessage = ref("");
 
 const { startImport } = useImportProgress();
+
+const modalMode = ref<"create" | "edit" | "view" | null>(null);
+const modalQuestion = ref<Question | null>(null);
+
+function openCreate() { modalQuestion.value = null; modalMode.value = "create"; }
+function openEdit(q: Question) { modalQuestion.value = q; modalMode.value = "edit"; }
+function openView(q: Question) { modalQuestion.value = q; modalMode.value = "view"; }
+function closeModal() { modalMode.value = null; }
+function onSaved() { modalMode.value = null; refresh(); }
+
+async function handleExport() {
+  const path = await saveDialog({
+    defaultPath: "forgerust-questions.json",
+    filters: [{ name: "JSON 题库", extensions: ["json"] }],
+  });
+  if (!path) return;
+  try {
+    const n = await invoke<number>("export_questions", { path });
+    alert(`已导出 ${n} 道题到\n${path}`);
+  } catch (e) {
+    alert(e);
+  }
+}
+
+async function handleMarkWrong(q: Question) {
+  try {
+    await invoke("mark_question_wrong", { questionId: q.id });
+    alert("已加入错题本");
+  } catch (e) {
+    alert(e);
+  }
+}
 
 async function refresh() {
   loading.value = true;
@@ -164,10 +197,17 @@ function difficultyLabel(d: number): string {
           浏览、搜索与导入题目。全库共 {{ grandTotal }} 题<span v-if="searchTerm || currentTag !== '全部'"> · 当前筛选 {{ filteredCount }} 题</span>。
         </p>
       </div>
-      <button class="fr-btn fr-btn-primary" @click="handleImport">
-        <Icon name="Upload" :size="14" />
-        <span>导入题库</span>
-      </button>
+      <div class="head-actions">
+        <button class="fr-btn fr-btn-ghost" @click="handleExport">
+          <Icon name="Download" :size="14" /><span>导出</span>
+        </button>
+        <button class="fr-btn fr-btn-ghost" @click="openCreate">
+          <Icon name="Plus" :size="14" /><span>新增题目</span>
+        </button>
+        <button class="fr-btn fr-btn-primary" @click="handleImport">
+          <Icon name="Upload" :size="14" /><span>导入题库</span>
+        </button>
+      </div>
     </header>
 
     <div class="search-box">
@@ -236,7 +276,16 @@ function difficultyLabel(d: number): string {
         </div>
         <div class="q-content">{{ q.content }}</div>
         <div class="q-actions">
-          <button class="icon-btn" title="删除" @click="handleDelete(q)">
+          <button class="icon-btn" title="查看详情" @click="openView(q)">
+            <Icon name="Eye" :size="14" />
+          </button>
+          <button class="icon-btn" title="编辑" @click="openEdit(q)">
+            <Icon name="Pencil" :size="14" />
+          </button>
+          <button class="icon-btn" title="加入错题本" @click="handleMarkWrong(q)">
+            <Icon name="BookmarkPlus" :size="14" />
+          </button>
+          <button class="icon-btn danger" title="删除" @click="handleDelete(q)">
             <Icon name="Trash2" :size="14" />
           </button>
         </div>
@@ -254,6 +303,15 @@ function difficultyLabel(d: number): string {
         <span>下一页</span><Icon name="ChevronRight" :size="14" />
       </button>
     </div>
+
+    <QuestionModal
+      v-if="modalMode"
+      :mode="modalMode"
+      :question="modalQuestion"
+      :tags="tags"
+      @close="closeModal"
+      @saved="onSaved"
+    />
    </div>
   </div>
 </template>
@@ -272,6 +330,7 @@ function difficultyLabel(d: number): string {
   gap: var(--sp-4);
   margin-bottom: var(--sp-6);
 }
+.head-actions { display: flex; gap: var(--sp-2); align-items: center; }
 
 .search-box {
   position: relative;
@@ -435,10 +494,8 @@ function difficultyLabel(d: number): string {
   justify-content: center;
   transition: all var(--dur-fast) var(--ease);
 }
-.icon-btn:hover {
-  color: var(--danger);
-  background: var(--danger-soft);
-}
+.icon-btn:hover { color: var(--text); background: var(--surface-2); }
+.icon-btn.danger:hover { color: var(--danger); background: var(--danger-soft); }
 
 .pager {
   display: flex;

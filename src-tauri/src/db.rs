@@ -167,6 +167,15 @@ pub async fn export_questions_json(pool: &SqlitePool) -> Result<String, String> 
     serde_json::to_string_pretty(&items).map_err(|e| format!("序列化失败: {}", e))
 }
 
+pub async fn mark_question_wrong(pool: &SqlitePool, question_id: i32) -> Result<(), String> {
+    sqlx::query("INSERT OR IGNORE INTO wrong_book_manual (question_id) VALUES (?)")
+        .bind(question_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("加入错题本失败: {}", e))?;
+    Ok(())
+}
+
 async fn seed_default_topics(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     for (name, description) in DEFAULT_TOPICS {
         sqlx::query(
@@ -313,7 +322,16 @@ pub async fn init_db(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM questions")  
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS wrong_book_manual (
+            question_id INTEGER PRIMARY KEY REFERENCES questions(id) ON DELETE CASCADE,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );"
+    )
+    .execute(&pool)
+    .await?;
+
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM questions")
         .fetch_one(&pool)  
         .await?;  
   
@@ -456,6 +474,38 @@ mod tests {
         // init_db 注入了 3 道种子题，导出应为非空 JSON 数组且含已知题干
         assert!(json.trim_start().starts_with('['));
         assert!(json.contains("进程与线程"));
+
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn manual_wrong_mark_and_clear() {
+        let db_path = test_db_path("manual-wrong");
+        let pool = init_db(db_path.clone()).await.unwrap();
+
+        let id = create_question(
+            &pool, "ESSAY", "手动标记测试题", None, "其他", 1, "答案", "解析",
+        )
+        .await
+        .unwrap() as i32;
+
+        mark_question_wrong(&pool, id).await.unwrap();
+        let cnt: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wrong_book_manual WHERE question_id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(cnt, 1);
+
+        // 重复标记应幂等
+        mark_question_wrong(&pool, id).await.unwrap();
+        let cnt2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wrong_book_manual WHERE question_id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(cnt2, 1);
 
         pool.close().await;
         let _ = std::fs::remove_file(db_path);

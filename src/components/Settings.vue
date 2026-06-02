@@ -9,6 +9,7 @@ const apiUrl = inject<Ref<string>>("apiUrl", ref("https://zenmux.ai/api/v1/chat/
 
 const localKey = ref("");
 const localUrl = ref("");
+const localModel = ref("");
 const saving = ref(false);
 const message = ref("");
 const messageType = ref<"ok" | "err" | "">("");
@@ -25,6 +26,7 @@ onMounted(async () => {
     const cfg: any = await invoke("get_api_config");
     localKey.value = cfg.api_key ?? "";
     localUrl.value = cfg.api_url ?? localUrl.value;
+    localModel.value = cfg.model ?? "";
   } catch (e) {
     console.warn("加载 API 配置失败", e);
   }
@@ -35,7 +37,7 @@ async function save() {
   message.value = "";
   messageType.value = "";
   try {
-    await invoke("set_api_config", { apiKey: localKey.value, apiUrl: localUrl.value });
+    await invoke("set_api_config", { apiKey: localKey.value, apiUrl: localUrl.value, model: localModel.value });
     apiKey.value = localKey.value;
     apiUrl.value = localUrl.value;
     message.value = "已保存";
@@ -67,6 +69,10 @@ async function save() {
       <div class="field">
         <label>API URL</label>
         <input v-model="localUrl" type="text" class="fr-input" placeholder="https://..." />
+      </div>
+      <div class="field">
+        <label>模型名称</label>
+        <input v-model="localModel" type="text" class="fr-input" placeholder="deepseek-chat" />
       </div>
 
       <div class="actions">

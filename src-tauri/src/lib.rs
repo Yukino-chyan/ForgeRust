@@ -110,14 +110,25 @@ async fn get_wrong_questions(
             q.difficulty,
             q.standard_answer,
             q.explanation,
-            COUNT(*)                                        AS wrong_count,
-            MAX(r.score)                                    AS last_score,
-            MAX(r.created_at)                               AS last_attempt,
-            SUM(r.manually_added)                           AS manually_added_count
-         FROM training_records r
-         JOIN questions q ON q.id = r.question_id
-         WHERE r.score < 60 OR r.is_correct = 0 OR r.manually_added = 1
-         GROUP BY q.id
+            COALESCE(r.wrong_count, 0)                       AS wrong_count,
+            COALESCE(r.last_score, -1)                       AS last_score,
+            COALESCE(r.last_attempt, m.created_at, '')       AS last_attempt,
+            COALESCE(r.manually_added_count, 0)
+                + CASE WHEN m.question_id IS NOT NULL THEN 1 ELSE 0 END
+                                                             AS manually_added_count
+         FROM questions q
+         LEFT JOIN (
+            SELECT question_id,
+                   COUNT(*)              AS wrong_count,
+                   MAX(score)            AS last_score,
+                   MAX(created_at)       AS last_attempt,
+                   SUM(manually_added)   AS manually_added_count
+            FROM training_records
+            WHERE score < 60 OR is_correct = 0 OR manually_added = 1
+            GROUP BY question_id
+         ) r ON r.question_id = q.id
+         LEFT JOIN wrong_book_manual m ON m.question_id = q.id
+         WHERE r.question_id IS NOT NULL OR m.question_id IS NOT NULL
          ORDER BY wrong_count DESC, last_attempt DESC"
     )
     .fetch_all(&*pool)
@@ -131,6 +142,11 @@ async fn remove_from_wrong_book(
     pool: tauri::State<'_, SqlitePool>,
 ) -> Result<(), String> {
     sqlx::query("DELETE FROM training_records WHERE question_id = ?")
+        .bind(question_id)
+        .execute(&*pool)
+        .await
+        .map_err(|e| format!("删除失败: {}", e))?;
+    sqlx::query("DELETE FROM wrong_book_manual WHERE question_id = ?")
         .bind(question_id)
         .execute(&*pool)
         .await
@@ -866,6 +882,65 @@ async fn count_questions(
 }
 
 #[tauri::command]
+async fn create_question(
+    question_type: String,
+    content: String,
+    options: Option<String>,
+    tags: String,
+    difficulty: i32,
+    standard_answer: String,
+    explanation: String,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<i64, String> {
+    db::create_question(
+        &pool, &question_type, &content, options.as_deref(),
+        &tags, difficulty, &standard_answer, &explanation,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn update_question(
+    id: i32,
+    question_type: String,
+    content: String,
+    options: Option<String>,
+    tags: String,
+    difficulty: i32,
+    standard_answer: String,
+    explanation: String,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<(), String> {
+    db::update_question(
+        &pool, id, &question_type, &content, options.as_deref(),
+        &tags, difficulty, &standard_answer, &explanation,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn export_questions(
+    path: String,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<usize, String> {
+    let json = db::export_questions_json(&pool).await?;
+    std::fs::write(&path, &json).map_err(|e| format!("写入文件失败: {}", e))?;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM questions")
+        .fetch_one(&*pool)
+        .await
+        .map_err(|e| format!("统计失败: {}", e))?;
+    Ok(count as usize)
+}
+
+#[tauri::command]
+async fn mark_question_wrong(
+    question_id: i32,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<(), String> {
+    db::mark_question_wrong(&pool, question_id).await
+}
+
+#[tauri::command]
 async fn get_all_tags(
     pool: tauri::State<'_, SqlitePool>,
 ) -> Result<Vec<String>, String> {
@@ -1260,6 +1335,10 @@ pub fn run() {
             list_questions,
             delete_question,
             count_questions,
+            create_question,
+            update_question,
+            export_questions,
+            mark_question_wrong,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

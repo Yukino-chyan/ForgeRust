@@ -70,16 +70,17 @@ pub async fn call_api_stream<F: FnMut(&str)>(
     }
 
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut buffer: Vec<u8> = Vec::new();
     let mut full = String::new();
 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.map_err(|e| format!("读取流失败: {}", e))?;
-        buffer.push_str(&String::from_utf8_lossy(&bytes));
+        buffer.extend_from_slice(&bytes);
 
-        // 按行处理；最后一段可能不完整，留在 buffer 里等下次
-        while let Some(pos) = buffer.find('\n') {
-            let line: String = buffer.drain(..=pos).collect();
+        // 按 \n 切完整行；不完整的尾部字节留在 buffer 等下次（避免切断多字节字符）
+        while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buffer.drain(..=pos).collect();
+            let line = String::from_utf8_lossy(&line_bytes);
             match parse_sse_line(&line) {
                 SseEvent::Delta(token) => {
                     on_token(&token);
@@ -91,9 +92,10 @@ pub async fn call_api_stream<F: FnMut(&str)>(
         }
     }
 
-    // 流结束但没遇到 [DONE]：处理 buffer 残余行
-    if !buffer.trim().is_empty() {
-        if let SseEvent::Delta(token) = parse_sse_line(&buffer) {
+    // 流结束但没遇到 [DONE]：处理 buffer 残余
+    if !buffer.is_empty() {
+        let line = String::from_utf8_lossy(&buffer);
+        if let SseEvent::Delta(token) = parse_sse_line(&line) {
             on_token(&token);
             full.push_str(&token);
         }

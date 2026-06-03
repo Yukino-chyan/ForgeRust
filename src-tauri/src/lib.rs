@@ -9,7 +9,7 @@ use crate::models::{
     ImportProgress, ImportQuestion, ImportResult, MockEvaluation, MockInterviewReport,
     MockInterviewStart, MockInterviewTurn, Question, SaveRecordInput, SessionRecord, Topic,
     TagStat, WrongQuestion,
-    ParsedResume, ResumeRecord, InterviewTurn,
+    ParsedResume, ResumeRecord, InterviewTurn, DimensionScores, InterviewReport2,
 };
 use sqlx::SqlitePool;
 use std::path::PathBuf;
@@ -597,6 +597,56 @@ async fn interview_respond(
     db::add_interview_message(&pool, interview_id, "candidate", &current_phase, &ans).await?;
 
     run_interviewer_turn(&pool, &app, &api_url, &api_key, &model, interview_id).await
+}
+
+#[tauri::command]
+async fn finish_interview(
+    interview_id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+    config: tauri::State<'_, Mutex<AppConfig>>,
+) -> Result<InterviewReport2, String> {
+    let messages = db::get_interview_messages(&pool, interview_id).await?;
+
+    // 候选人是否有过有效作答
+    let answered = messages.iter().any(|m| m.role == "candidate" && m.content.trim() != "（跳过未作答）" && !m.content.trim().is_empty());
+
+    let (scores, summary) = if !answered {
+        (
+            DimensionScores { project_depth: 0, fundamental_solidity: 0, communication: 0 },
+            "本次面试没有任何有效作答，无法评估表现。建议正式作答后再生成复盘。".to_string(),
+        )
+    } else {
+        let transcript = messages.iter()
+            .map(|m| {
+                let who = if m.role == "interviewer" { "面试官" } else { "候选人" };
+                format!("[{}] {}: {}", m.phase, who, m.content)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (api_url, api_key, model) = {
+            let cfg = config.lock().map_err(|e| e.to_string())?;
+            (cfg.api_url.clone(), cfg.api_key.clone(), cfg.model.clone())
+        };
+        llm_client::evaluate_interview(&api_url, &api_key, &model, &transcript)
+            .await
+            .unwrap_or_else(|_| (
+                DimensionScores { project_depth: 60, fundamental_solidity: 60, communication: 60 },
+                "评分服务暂时不可用，已记录对话。建议复盘低分环节。".to_string(),
+            ))
+    };
+
+    let average_score =
+        (scores.project_depth + scores.fundamental_solidity + scores.communication) as f64 / 3.0;
+    let dim_json = serde_json::to_string(&scores).unwrap_or_else(|_| "{}".into());
+    db::finish_interview2(&pool, interview_id, average_score, &dim_json, &summary).await?;
+
+    Ok(InterviewReport2 {
+        interview_id,
+        average_score,
+        dimension_scores: scores,
+        summary,
+        messages,
+    })
 }
 
 #[tauri::command]
@@ -1516,6 +1566,7 @@ pub fn run() {
             parse_resume,
             start_interview,
             interview_respond,
+            finish_interview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

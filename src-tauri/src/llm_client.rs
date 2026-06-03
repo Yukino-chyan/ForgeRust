@@ -411,6 +411,46 @@ pub async fn summarize_mock_interview(
     call_api(api_url, api_key, model, system_prompt, transcript, 0.4, 1024).await
 }
 
+pub async fn parse_resume_llm(
+    api_url: &str,
+    api_key: &str,
+    model: &str,
+    raw_text: &str,
+) -> Result<crate::models::ParsedResume, String> {
+    let system_prompt = concat!(
+        "你是简历解析助手。从候选人简历文本中提取结构化信息。",
+        "只返回 JSON，不要任何 Markdown 或多余文字，格式：",
+        r#"{"candidate":"姓名或标题","projects":[{"name":"项目名","role":"担任角色","summary":"一句话简介","highlights":["技术亮点1","亮点2"]}],"tech_stack":["技能1","技能2"]}"#
+    );
+    let raw = call_api(api_url, api_key, model, system_prompt, raw_text, 0.2, 2048).await?;
+    serde_json::from_str(clean_json(&raw))
+        .map_err(|e| format!("简历解析 JSON 失败: {}，原始内容: {}", e, raw))
+}
+
+// 基于完整对话记录给出三维评分 + 文字复盘
+pub async fn evaluate_interview(
+    api_url: &str,
+    api_key: &str,
+    model: &str,
+    transcript: &str,
+) -> Result<(crate::models::DimensionScores, String), String> {
+    let system_prompt = concat!(
+        "你是资深技术面试官，对一场模拟面试做复盘。基于完整对话记录，给出三个维度 0-100 的评分与一段中文总结（150 字内，含薄弱点与改进建议）。",
+        "只返回 JSON：",
+        r#"{"project_depth":85,"fundamental_solidity":70,"communication":80,"summary":"..."}"#
+    );
+    let raw = call_api(api_url, api_key, model, system_prompt, transcript, 0.3, 1024).await?;
+    let v: Value = serde_json::from_str(clean_json(&raw))
+        .map_err(|e| format!("评分 JSON 解析失败: {}，原始内容: {}", e, raw))?;
+    let scores = crate::models::DimensionScores {
+        project_depth: v["project_depth"].as_i64().unwrap_or(0).clamp(0, 100) as i32,
+        fundamental_solidity: v["fundamental_solidity"].as_i64().unwrap_or(0).clamp(0, 100) as i32,
+        communication: v["communication"].as_i64().unwrap_or(0).clamp(0, 100) as i32,
+    };
+    let summary = v["summary"].as_str().unwrap_or("").trim().to_string();
+    Ok((scores, summary))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,7 +9,7 @@ use crate::models::{
     ImportProgress, ImportQuestion, ImportResult, MockEvaluation, MockInterviewReport,
     MockInterviewStart, MockInterviewTurn, Question, SaveRecordInput, SessionRecord, Topic,
     TagStat, WrongQuestion,
-    ParsedResume, ResumeRecord,
+    ParsedResume, ResumeRecord, InterviewTurn,
 };
 use sqlx::SqlitePool;
 use std::path::PathBuf;
@@ -456,6 +456,147 @@ async fn parse_resume(
         projects: parsed.projects,
         tech_stack: parsed.tech_stack,
     })
+}
+
+// 构建某环节的 system prompt
+fn build_interviewer_system(phase: &str, resume_brief: &str, used: i32, cap: i32) -> String {
+    let remaining = (cap - used).max(0);
+    let phase_cn = if phase == "project" { "项目经历" } else { "技术八股（基础原理）" };
+    format!(
+        "你是一名资深技术面试官，正在进行模拟面试的【{phase_cn}】环节。\
+        候选人简历摘要：{resume_brief}。\
+        要求：每次只问一个问题；问题要顺着候选人上一轮回答自然深入或转向；语气专业简洁，不要寒暄过多；不要给出答案或点评。\
+        本环节还可进行约 {remaining} 轮。若你认为本环节已充分考察，可在回复最后另起一行输出 {mark} 表示提前结束本环节。\
+        {phase_extra}",
+        phase_cn = phase_cn,
+        resume_brief = resume_brief,
+        remaining = remaining,
+        mark = PHASE_DONE_MARK,
+        phase_extra = if phase == "project" {
+            "项目环节：围绕候选人真实项目追问技术选型、难点、权衡、量化结果。"
+        } else {
+            "八股环节：围绕候选人技术栈考察底层原理、常见考点，由浅入深。"
+        }
+    )
+}
+
+// 取简历摘要文本（候选人 + 技术栈 + 项目名），用于注入提示词
+async fn resume_brief(pool: &SqlitePool, resume_id: i64) -> String {
+    match db::get_resume_raw(pool, resume_id).await {
+        Ok((candidate, projects_json, tech_json)) => {
+            let projects: Vec<crate::models::ResumeProject> =
+                serde_json::from_str(&projects_json).unwrap_or_default();
+            let tech: Vec<String> = serde_json::from_str(&tech_json).unwrap_or_default();
+            let proj_names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
+            format!("候选人 {}；技术栈 [{}]；项目 [{}]", candidate, tech.join("、"), proj_names.join("、"))
+        }
+        Err(_) => String::new(),
+    }
+}
+
+// 生成一轮面试官提问：组装消息→流式生成（发 interview-token 事件）→剥离 PHASE_DONE→落库→推进状态机
+async fn run_interviewer_turn(
+    pool: &SqlitePool,
+    app: &tauri::AppHandle,
+    api_url: &str,
+    api_key: &str,
+    model: &str,
+    interview_id: i64,
+) -> Result<InterviewTurn, String> {
+    // 注：`app.emit` 依赖文件顶部已有的 `use tauri::Emitter;`（lib.rs:17），此处不再重复 import。
+    let (current_phase, project_cap, fundamental_cap, resume_id) =
+        db::get_interview_phase(pool, interview_id).await?;
+    let used = db::count_phase_questions(pool, interview_id, &current_phase).await? as i32;
+
+    let brief = resume_brief(pool, resume_id).await;
+    let cap = if current_phase == "project" { project_cap } else { fundamental_cap };
+    let system = build_interviewer_system(&current_phase, &brief, used, cap);
+
+    // 组装消息：system + 历史（interviewer→assistant, candidate→user）
+    let history = db::get_interview_messages(pool, interview_id).await?;
+    let mut messages: Vec<serde_json::Value> = vec![serde_json::json!({"role":"system","content":system})];
+    for m in &history {
+        let role = if m.role == "interviewer" { "assistant" } else { "user" };
+        messages.push(serde_json::json!({"role": role, "content": m.content}));
+    }
+    // 若是本环节第一问且无历史，给个起始 user 提示，促使模型开口
+    if history.is_empty() {
+        messages.push(serde_json::json!({"role":"user","content":"请开始面试，先做简短开场再提出第一个问题。"}));
+    }
+
+    let app_for_cb = app.clone();
+    let full = llm_client::call_api_stream(
+        api_url, api_key, model, messages, 0.6, 1024,
+        move |token| {
+            let _ = app_for_cb.emit("interview-token", serde_json::json!({
+                "interviewId": interview_id,
+                "chunk": token,
+            }));
+        },
+    )
+    .await?;
+
+    let (clean_text, phase_done) = strip_phase_done(&full);
+    let message = if clean_text.is_empty() { "（面试官沉默了，请稍后重试）".to_string() } else { clean_text };
+
+    // 落库本轮面试官提问
+    db::add_interview_message(pool, interview_id, "interviewer", &current_phase, &message).await?;
+
+    // 推进状态机：基于「问完这轮后」的计数判断下一环节/是否结束
+    let used_after = used + 1;
+    let (project_used, fundamental_used) = if current_phase == "project" {
+        (used_after, db::count_phase_questions(pool, interview_id, "fundamental").await? as i32)
+    } else {
+        (db::count_phase_questions(pool, interview_id, "project").await? as i32, used_after)
+    };
+    let (next_phase, finished) = decide_phase(
+        &current_phase, project_used, project_cap, fundamental_used, fundamental_cap, phase_done,
+    );
+    if next_phase != current_phase {
+        db::set_interview_phase(pool, interview_id, &next_phase).await?;
+    }
+
+    Ok(InterviewTurn { message, phase: current_phase, finished })
+}
+
+#[tauri::command]
+async fn start_interview(
+    resume_id: i64,
+    project_cap: i32,
+    fundamental_cap: i32,
+    pool: tauri::State<'_, SqlitePool>,
+    config: tauri::State<'_, Mutex<AppConfig>>,
+    app: tauri::AppHandle,
+) -> Result<(i64, InterviewTurn), String> {
+    let (api_url, api_key, model) = {
+        let cfg = config.lock().map_err(|e| e.to_string())?;
+        (cfg.api_url.clone(), cfg.api_key.clone(), cfg.model.clone())
+    };
+    let pc = project_cap.clamp(1, 20);
+    let fc = fundamental_cap.clamp(0, 20);
+    let interview_id = db::create_interview2(&pool, resume_id, pc, fc, "").await?;
+    let turn = run_interviewer_turn(&pool, &app, &api_url, &api_key, &model, interview_id).await?;
+    Ok((interview_id, turn))
+}
+
+#[tauri::command]
+async fn interview_respond(
+    interview_id: i64,
+    answer: String,
+    pool: tauri::State<'_, SqlitePool>,
+    config: tauri::State<'_, Mutex<AppConfig>>,
+    app: tauri::AppHandle,
+) -> Result<InterviewTurn, String> {
+    let (api_url, api_key, model) = {
+        let cfg = config.lock().map_err(|e| e.to_string())?;
+        (cfg.api_url.clone(), cfg.api_key.clone(), cfg.model.clone())
+    };
+    // 落库候选人回答（用当前环节）
+    let (current_phase, _pc, _fc, _rid) = db::get_interview_phase(&pool, interview_id).await?;
+    let ans = if answer.trim().is_empty() { "（跳过未作答）".to_string() } else { answer.trim().to_string() };
+    db::add_interview_message(&pool, interview_id, "candidate", &current_phase, &ans).await?;
+
+    run_interviewer_turn(&pool, &app, &api_url, &api_key, &model, interview_id).await
 }
 
 #[tauri::command]
@@ -1373,6 +1514,8 @@ pub fn run() {
             export_questions,
             mark_question_wrong,
             parse_resume,
+            start_interview,
+            interview_respond,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

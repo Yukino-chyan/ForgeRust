@@ -176,6 +176,162 @@ pub async fn mark_question_wrong(pool: &SqlitePool, question_id: i32) -> Result<
     Ok(())
 }
 
+pub async fn create_resume(
+    pool: &SqlitePool,
+    raw_text: &str,
+    candidate: &str,
+    projects_json: &str,
+    tech_stack_json: &str,
+) -> Result<i64, String> {
+    sqlx::query_scalar::<_, i64>(
+        "INSERT INTO resumes (raw_text, candidate, projects, tech_stack)
+         VALUES (?, ?, ?, ?) RETURNING id",
+    )
+    .bind(raw_text)
+    .bind(candidate)
+    .bind(projects_json)
+    .bind(tech_stack_json)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("保存简历失败: {}", e))
+}
+
+// 读取简历的 (candidate, projects_json, tech_stack_json)
+pub async fn get_resume_raw(pool: &SqlitePool, id: i64) -> Result<(String, String, String), String> {
+    sqlx::query_as::<_, (String, String, String)>(
+        "SELECT candidate, projects, tech_stack FROM resumes WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("读取简历失败: {}", e))
+}
+
+pub async fn create_interview2(
+    pool: &SqlitePool,
+    resume_id: i64,
+    project_cap: i32,
+    fundamental_cap: i32,
+    tags: &str,
+) -> Result<i64, String> {
+    sqlx::query_scalar::<_, i64>(
+        "INSERT INTO mock_interviews (tags, question_count, status, resume_id, project_cap, fundamental_cap, phase)
+         VALUES (?, 0, 'active', ?, ?, ?, 'project') RETURNING id",
+    )
+    .bind(tags)
+    .bind(resume_id)
+    .bind(project_cap)
+    .bind(fundamental_cap)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("创建面试失败: {}", e))
+}
+
+pub async fn add_interview_message(
+    pool: &SqlitePool,
+    interview_id: i64,
+    role: &str,
+    phase: &str,
+    content: &str,
+) -> Result<(), String> {
+    let next_seq: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM interview_messages WHERE interview_id = ?",
+    )
+    .bind(interview_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("计算消息序号失败: {}", e))?;
+
+    sqlx::query(
+        "INSERT INTO interview_messages (interview_id, role, phase, content, seq)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(interview_id)
+    .bind(role)
+    .bind(phase)
+    .bind(content)
+    .bind(next_seq)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("保存对话消息失败: {}", e))?;
+    Ok(())
+}
+
+pub async fn get_interview_messages(
+    pool: &SqlitePool,
+    interview_id: i64,
+) -> Result<Vec<crate::models::InterviewMessage>, String> {
+    sqlx::query_as::<_, (String, String, String, i64)>(
+        "SELECT role, phase, content, seq FROM interview_messages
+         WHERE interview_id = ? ORDER BY seq ASC",
+    )
+    .bind(interview_id)
+    .fetch_all(pool)
+    .await
+    .map(|rows| {
+        rows.into_iter()
+            .map(|(role, phase, content, seq)| crate::models::InterviewMessage { role, phase, content, seq })
+            .collect()
+    })
+    .map_err(|e| format!("读取对话失败: {}", e))
+}
+
+// 某环节面试官已提问的轮数
+pub async fn count_phase_questions(pool: &SqlitePool, interview_id: i64, phase: &str) -> Result<i64, String> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM interview_messages
+         WHERE interview_id = ? AND phase = ? AND role = 'interviewer'",
+    )
+    .bind(interview_id)
+    .bind(phase)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("统计提问数失败: {}", e))
+}
+
+pub async fn get_interview_phase(pool: &SqlitePool, interview_id: i64) -> Result<(String, i32, i32, i64), String> {
+    // 返回 (phase, project_cap, fundamental_cap, resume_id)
+    sqlx::query_as::<_, (String, i32, i32, i64)>(
+        "SELECT phase, project_cap, fundamental_cap, COALESCE(resume_id, 0) FROM mock_interviews WHERE id = ?",
+    )
+    .bind(interview_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("读取面试状态失败: {}", e))
+}
+
+pub async fn set_interview_phase(pool: &SqlitePool, interview_id: i64, phase: &str) -> Result<(), String> {
+    sqlx::query("UPDATE mock_interviews SET phase = ? WHERE id = ?")
+        .bind(phase)
+        .bind(interview_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("更新环节失败: {}", e))?;
+    Ok(())
+}
+
+pub async fn finish_interview2(
+    pool: &SqlitePool,
+    interview_id: i64,
+    average_score: f64,
+    dimension_scores_json: &str,
+    summary: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE mock_interviews
+         SET ended_at = datetime('now','localtime'), average_score = ?, dimension_scores = ?, summary = ?, status = 'finished'
+         WHERE id = ?",
+    )
+    .bind(average_score)
+    .bind(dimension_scores_json)
+    .bind(summary)
+    .bind(interview_id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("保存面试总结失败: {}", e))?;
+    Ok(())
+}
+
 async fn seed_default_topics(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     for (name, description) in DEFAULT_TOPICS {
         sqlx::query(
@@ -330,6 +486,40 @@ pub async fn init_db(db_path: PathBuf) -> Result<SqlitePool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS resumes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            raw_text    TEXT NOT NULL,
+            candidate   TEXT NOT NULL DEFAULT '',
+            projects    TEXT NOT NULL DEFAULT '[]',
+            tech_stack  TEXT NOT NULL DEFAULT '[]'
+        );"
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS interview_messages (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            interview_id INTEGER NOT NULL REFERENCES mock_interviews(id) ON DELETE CASCADE,
+            role         TEXT NOT NULL,
+            phase        TEXT NOT NULL,
+            content      TEXT NOT NULL,
+            seq          INTEGER NOT NULL,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );"
+    )
+    .execute(&pool)
+    .await?;
+
+    // 扩展 mock_interviews（幂等：列已存在时忽略错误，沿用本文件既有 ALTER 风格）
+    let _ = sqlx::query("ALTER TABLE mock_interviews ADD COLUMN resume_id INTEGER").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE mock_interviews ADD COLUMN project_cap INTEGER NOT NULL DEFAULT 5").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE mock_interviews ADD COLUMN fundamental_cap INTEGER NOT NULL DEFAULT 5").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE mock_interviews ADD COLUMN dimension_scores TEXT NOT NULL DEFAULT '{}'").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE mock_interviews ADD COLUMN phase TEXT NOT NULL DEFAULT 'project'").execute(&pool).await;
 
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM questions")
         .fetch_one(&pool)  
@@ -506,6 +696,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cnt2, 1);
+
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn resume_and_interview_message_roundtrip() {
+        let db_path = test_db_path("interview2");
+        let pool = init_db(db_path.clone()).await.unwrap();
+
+        let resume_id = create_resume(&pool, "raw resume text", "张三", "[]", r#"["Rust"]"#)
+            .await
+            .unwrap();
+        assert!(resume_id > 0);
+
+        let iv_id = create_interview2(&pool, resume_id, 5, 5, "Rust").await.unwrap();
+        assert!(iv_id > 0);
+
+        add_interview_message(&pool, iv_id, "interviewer", "project", "介绍下你的项目？").await.unwrap();
+        add_interview_message(&pool, iv_id, "candidate", "project", "我做了一个...").await.unwrap();
+        add_interview_message(&pool, iv_id, "interviewer", "project", "为什么这样设计？").await.unwrap();
+
+        let msgs = get_interview_messages(&pool, iv_id).await.unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].seq, 1);
+        assert_eq!(msgs[2].seq, 3);
+
+        // 面试官在 project 环节提了 2 个问题
+        let asked = count_phase_questions(&pool, iv_id, "project").await.unwrap();
+        assert_eq!(asked, 2);
 
         pool.close().await;
         let _ = std::fs::remove_file(db_path);

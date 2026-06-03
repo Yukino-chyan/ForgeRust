@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 
@@ -28,6 +29,77 @@ pub(crate) fn parse_sse_line(line: &str) -> SseEvent {
         }
         Err(_) => SseEvent::Other,
     }
+}
+
+// 流式调用：messages 为完整 chat 消息数组；on_token 对每个文本增量回调一次；返回拼接后的完整文本。
+pub async fn call_api_stream<F: FnMut(&str)>(
+    api_url: &str,
+    api_key: &str,
+    model: &str,
+    messages: Vec<Value>,
+    temperature: f64,
+    max_tokens: u32,
+    mut on_token: F,
+) -> Result<String, String> {
+    if api_key.is_empty() {
+        return Err("API Key 未配置，请点击左下角「设置」填写。".into());
+    }
+
+    let client = Client::new();
+    let request_body = json!({
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": true
+    });
+
+    let response = client
+        .post(api_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("网络请求失败: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("API 请求失败，状态码: {}，详情: {}", status, error_text));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut full = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| format!("读取流失败: {}", e))?;
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+        // 按行处理；最后一段可能不完整，留在 buffer 里等下次
+        while let Some(pos) = buffer.find('\n') {
+            let line: String = buffer.drain(..=pos).collect();
+            match parse_sse_line(&line) {
+                SseEvent::Delta(token) => {
+                    on_token(&token);
+                    full.push_str(&token);
+                }
+                SseEvent::Done => return Ok(full),
+                SseEvent::Other => {}
+            }
+        }
+    }
+
+    // 流结束但没遇到 [DONE]：处理 buffer 残余行
+    if !buffer.trim().is_empty() {
+        if let SseEvent::Delta(token) = parse_sse_line(&buffer) {
+            on_token(&token);
+            full.push_str(&token);
+        }
+    }
+
+    Ok(full)
 }
 
 fn clean_json(raw: &str) -> &str {

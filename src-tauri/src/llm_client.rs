@@ -1,6 +1,35 @@
 use reqwest::Client;
 use serde_json::{json, Value};
 
+pub(crate) enum SseEvent {
+    Delta(String),
+    Done,
+    Other,
+}
+
+// 解析一行 SSE。OpenAI 兼容流式格式：每行形如 `data: {json}`，结束行 `data: [DONE]`。
+pub(crate) fn parse_sse_line(line: &str) -> SseEvent {
+    let line = line.trim();
+    if !line.starts_with("data:") {
+        return SseEvent::Other;
+    }
+    let data = line["data:".len()..].trim();
+    if data == "[DONE]" {
+        return SseEvent::Done;
+    }
+    match serde_json::from_str::<Value>(data) {
+        Ok(v) => {
+            let delta = v["choices"][0]["delta"]["content"].as_str().unwrap_or("");
+            if delta.is_empty() {
+                SseEvent::Other
+            } else {
+                SseEvent::Delta(delta.to_string())
+            }
+        }
+        Err(_) => SseEvent::Other,
+    }
+}
+
 fn clean_json(raw: &str) -> &str {
     raw.trim()
         .trim_start_matches("```json")
@@ -306,4 +335,32 @@ pub async fn summarize_mock_interview(
         "薄弱知识点、表达建议和下一步复习建议。控制在 180 字以内。"
     );
     call_api(api_url, api_key, model, system_prompt, transcript, 0.4, 1024).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_sse_line_extracts_delta() {
+        let line = r#"data: {"choices":[{"delta":{"content":"你好"}}]}"#;
+        match parse_sse_line(line) {
+            SseEvent::Delta(s) => assert_eq!(s, "你好"),
+            _ => panic!("应解析出 Delta"),
+        }
+    }
+
+    #[test]
+    fn parse_sse_line_detects_done() {
+        assert!(matches!(parse_sse_line("data: [DONE]"), SseEvent::Done));
+    }
+
+    #[test]
+    fn parse_sse_line_ignores_blank_and_non_data() {
+        assert!(matches!(parse_sse_line(""), SseEvent::Other));
+        assert!(matches!(parse_sse_line(": keep-alive"), SseEvent::Other));
+        // delta 无 content 字段时也视为 Other
+        let line = r#"data: {"choices":[{"delta":{}}]}"#;
+        assert!(matches!(parse_sse_line(line), SseEvent::Other));
+    }
 }

@@ -1343,3 +1343,83 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+const PHASE_DONE_MARK: &str = "[PHASE_DONE]";
+
+// 剥离面试官输出里的 [PHASE_DONE] 标记，返回 (清理后的文本, 是否检测到标记)
+fn strip_phase_done(text: &str) -> (String, bool) {
+    if let Some(idx) = text.find(PHASE_DONE_MARK) {
+        let mut cleaned = String::with_capacity(text.len());
+        cleaned.push_str(&text[..idx]);
+        cleaned.push_str(&text[idx + PHASE_DONE_MARK.len()..]);
+        (cleaned.trim().to_string(), true)
+    } else {
+        (text.trim().to_string(), false)
+    }
+}
+
+// 决定下一次面试官提问所属环节，以及面试是否应结束。
+// 入参：当前 phase、project 已问轮数、project 上限、fundamental 已问轮数、fundamental 上限、本轮是否收到 PHASE_DONE。
+// 返回：(下一环节, 是否结束)
+fn decide_phase(
+    current_phase: &str,
+    project_used: i32,
+    project_cap: i32,
+    fundamental_used: i32,
+    fundamental_cap: i32,
+    phase_done: bool,
+) -> (String, bool) {
+    if current_phase == "project" {
+        if phase_done || project_used >= project_cap {
+            // 项目环节结束，转八股；若八股上限为 0 则直接结束
+            if fundamental_cap <= 0 {
+                return ("fundamental".into(), true);
+            }
+            return ("fundamental".into(), false);
+        }
+        ("project".into(), false)
+    } else {
+        // fundamental 环节
+        if phase_done || fundamental_used >= fundamental_cap {
+            return ("fundamental".into(), true);
+        }
+        ("fundamental".into(), false)
+    }
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+
+    #[test]
+    fn strip_phase_done_detects_and_removes_marker() {
+        let (text, done) = strip_phase_done("很好，项目部分聊得差不多了。\n[PHASE_DONE]");
+        assert!(done);
+        assert!(!text.contains("[PHASE_DONE]"));
+        assert!(text.contains("项目部分"));
+
+        let (text2, done2) = strip_phase_done("继续说说你的下一个项目？");
+        assert!(!done2);
+        assert_eq!(text2, "继续说说你的下一个项目？");
+    }
+
+    #[test]
+    fn decide_phase_advances_on_cap() {
+        // project 环节，已问满 cap → 切 fundamental
+        assert_eq!(decide_phase("project", 5, 5, 0, 5, false).0, "fundamental");
+        // project 环节，未满且无 PHASE_DONE → 留 project
+        assert_eq!(decide_phase("project", 2, 5, 0, 5, false).0, "project");
+        // project 环节，收到 PHASE_DONE → 切 fundamental
+        assert_eq!(decide_phase("project", 2, 5, 0, 5, true).0, "fundamental");
+    }
+
+    #[test]
+    fn decide_phase_finishes_when_fundamental_full() {
+        // fundamental 环节问满 cap → finished=true
+        let (_phase, finished) = decide_phase("fundamental", 5, 5, 5, 5, false);
+        assert!(finished);
+        // fundamental 未满 → 不结束
+        let (_p, fin2) = decide_phase("fundamental", 5, 5, 2, 5, false);
+        assert!(!fin2);
+    }
+}

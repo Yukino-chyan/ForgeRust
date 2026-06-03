@@ -153,42 +153,6 @@ pub struct SessionRecord {
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct MockInterviewStart {
-    pub interview_id: i64,
-    pub questions: Vec<Question>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MockEvaluation {
-    pub turn_id: i64,
-    pub score: i32,
-    pub comment: String,
-    pub follow_up: String,
-}
-
-#[derive(Debug, Serialize, FromRow)]
-pub struct MockInterviewTurn {
-    pub id: i64,
-    pub interview_id: i64,
-    pub question_id: i32,
-    pub question_content: String,
-    pub user_answer: String,
-    pub ai_comment: String,
-    pub follow_up: String,
-    pub follow_up_answer: String,
-    pub score: i32,
-    pub created_at: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct MockInterviewReport {
-    pub interview_id: i64,
-    pub average_score: f64,
-    pub summary: String,
-    pub turns: Vec<MockInterviewTurn>,
-}
-
 // ── 简历解析 ──
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ResumeProject {

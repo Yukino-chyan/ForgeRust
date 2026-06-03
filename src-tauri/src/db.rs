@@ -183,17 +183,19 @@ pub async fn create_resume(
     projects_json: &str,
     tech_stack_json: &str,
 ) -> Result<i64, String> {
-    sqlx::query_scalar::<_, i64>(
+    // 同 create_interview2：用 execute()+last_insert_rowid() 确保提交后行立即对异连接可见
+    let result = sqlx::query(
         "INSERT INTO resumes (raw_text, candidate, projects, tech_stack)
-         VALUES (?, ?, ?, ?) RETURNING id",
+         VALUES (?, ?, ?, ?)",
     )
     .bind(raw_text)
     .bind(candidate)
     .bind(projects_json)
     .bind(tech_stack_json)
-    .fetch_one(pool)
+    .execute(pool)
     .await
-    .map_err(|e| format!("保存简历失败: {}", e))
+    .map_err(|e| format!("保存简历失败: {}", e))?;
+    Ok(result.last_insert_rowid())
 }
 
 // 读取简历的 (candidate, projects_json, tech_stack_json)
@@ -214,17 +216,20 @@ pub async fn create_interview2(
     fundamental_cap: i32,
     tags: &str,
 ) -> Result<i64, String> {
-    sqlx::query_scalar::<_, i64>(
+    // 用 execute()（驱动到 SQLITE_DONE 并提交）+ last_insert_rowid()，
+    // 避免 INSERT...RETURNING + fetch_one 只 step 一次、隐式事务未提交导致异连接读不到。
+    let result = sqlx::query(
         "INSERT INTO mock_interviews (tags, question_count, status, resume_id, project_cap, fundamental_cap, phase)
-         VALUES (?, 0, 'active', ?, ?, ?, 'project') RETURNING id",
+         VALUES (?, 0, 'active', ?, ?, ?, 'project')",
     )
     .bind(tags)
     .bind(resume_id)
     .bind(project_cap)
     .bind(fundamental_cap)
-    .fetch_one(pool)
+    .execute(pool)
     .await
-    .map_err(|e| format!("创建面试失败: {}", e))
+    .map_err(|e| format!("创建面试失败: {}", e))?;
+    Ok(result.last_insert_rowid())
 }
 
 pub async fn add_interview_message(
@@ -726,6 +731,67 @@ mod tests {
         // 面试官在 project 环节提了 2 个问题
         let asked = count_phase_questions(&pool, iv_id, "project").await.unwrap();
         assert_eq!(asked, 2);
+
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn get_interview_phase_after_create_fresh() {
+        let db_path = test_db_path("phase-fresh");
+        let pool = init_db(db_path.clone()).await.unwrap();
+        let resume_id = create_resume(&pool, "txt", "张三", "[]", r#"["Rust"]"#).await.unwrap();
+        let iv_id = create_interview2(&pool, resume_id, 4, 6, "Rust").await.unwrap();
+
+        let (phase, pcap, fcap, rid) = get_interview_phase(&pool, iv_id).await.unwrap();
+        assert_eq!(phase, "project");
+        assert_eq!(pcap, 4);
+        assert_eq!(fcap, 6);
+        assert_eq!(rid, resume_id);
+
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    // 复现用户场景：已存在旧版 mock_interviews（无新列），再 init_db 迁移后读取
+    #[tokio::test]
+    async fn get_interview_phase_after_migrating_old_db() {
+        let db_path = test_db_path("phase-migrated");
+        // 1. 先用旧版 schema 建库（无 resume_id/project_cap/fundamental_cap/phase/dimension_scores）
+        {
+            let opts = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal);
+            let pool = SqlitePoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+            sqlx::query(
+                "CREATE TABLE mock_interviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                    ended_at TEXT,
+                    tags TEXT NOT NULL DEFAULT '',
+                    question_count INTEGER NOT NULL,
+                    average_score REAL NOT NULL DEFAULT 0,
+                    summary TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active'
+                );"
+            ).execute(&pool).await.unwrap();
+            // 插一条旧数据，模拟历史面试
+            sqlx::query("INSERT INTO mock_interviews (tags, question_count) VALUES ('Java', 3)")
+                .execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+        // 2. init_db 迁移
+        let pool = init_db(db_path.clone()).await.unwrap();
+        let resume_id = create_resume(&pool, "txt", "李四", "[]", r#"["Java"]"#).await.unwrap();
+        let iv_id = create_interview2(&pool, resume_id, 5, 5, "Java").await.unwrap();
+
+        // 3. 读取面试状态（用户报错处）
+        let (phase, pcap, fcap, rid) = get_interview_phase(&pool, iv_id).await.unwrap();
+        assert_eq!(phase, "project");
+        assert_eq!(pcap, 5);
+        assert_eq!(fcap, 5);
+        assert_eq!(rid, resume_id);
 
         pool.close().await;
         let _ = std::fs::remove_file(db_path);

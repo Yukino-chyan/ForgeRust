@@ -188,3 +188,68 @@ pub struct MockInterviewReport {
     pub summary: String,
     pub turns: Vec<MockInterviewTurn>,
 }
+
+// ── 简历解析 ──
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ResumeProject {
+    pub name: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub highlights: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ParsedResume {
+    #[serde(default)]
+    pub candidate: String,
+    #[serde(default)]
+    pub projects: Vec<ResumeProject>,
+    #[serde(default)]
+    pub tech_stack: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ResumeRecord {
+    pub id: i64,
+    pub candidate: String,
+    pub projects: Vec<ResumeProject>,
+    pub tech_stack: Vec<String>,
+}
+
+// ── 对话式面试 ──
+#[derive(Debug, Serialize, Clone)]
+pub struct InterviewMessage {
+    pub role: String,
+    pub phase: String,
+    pub content: String,
+    pub seq: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InterviewTurn {
+    pub message: String,
+    pub phase: String,
+    pub finished: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DimensionScores {
+    #[serde(default)]
+    pub project_depth: i32,
+    #[serde(default)]
+    pub fundamental_solidity: i32,
+    #[serde(default)]
+    pub communication: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InterviewReport2 {
+    pub interview_id: i64,
+    pub average_score: f64,
+    pub dimension_scores: DimensionScores,
+    pub summary: String,
+    pub messages: Vec<InterviewMessage>,
+}

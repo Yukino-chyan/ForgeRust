@@ -9,6 +9,7 @@ use crate::models::{
     ImportProgress, ImportQuestion, ImportResult, MockEvaluation, MockInterviewReport,
     MockInterviewStart, MockInterviewTurn, Question, SaveRecordInput, SessionRecord, Topic,
     TagStat, WrongQuestion,
+    ParsedResume, ResumeRecord,
 };
 use sqlx::SqlitePool;
 use std::path::PathBuf;
@@ -423,6 +424,38 @@ async fn finish_mock_interview(
     .map_err(|e| format!("保存模拟面试总结失败: {}", e))?;
 
     Ok(MockInterviewReport { interview_id, average_score, summary, turns })
+}
+
+// ── 对话式模拟面试命令（简历解析 / 流式对话 / 多维评分）──────────
+
+#[tauri::command]
+async fn parse_resume(
+    raw_text: String,
+    pool: tauri::State<'_, SqlitePool>,
+    config: tauri::State<'_, Mutex<AppConfig>>,
+) -> Result<ResumeRecord, String> {
+    if raw_text.trim().is_empty() {
+        return Err("简历内容为空，请确认 PDF 已正确解析。".into());
+    }
+    let (api_url, api_key, model) = {
+        let cfg = config.lock().map_err(|e| e.to_string())?;
+        (cfg.api_url.clone(), cfg.api_key.clone(), cfg.model.clone())
+    };
+
+    let parsed: ParsedResume =
+        llm_client::parse_resume_llm(&api_url, &api_key, &model, &raw_text).await?;
+
+    let projects_json = serde_json::to_string(&parsed.projects).unwrap_or_else(|_| "[]".into());
+    let tech_stack_json = serde_json::to_string(&parsed.tech_stack).unwrap_or_else(|_| "[]".into());
+
+    let id = db::create_resume(&pool, &raw_text, &parsed.candidate, &projects_json, &tech_stack_json).await?;
+
+    Ok(ResumeRecord {
+        id,
+        candidate: parsed.candidate,
+        projects: parsed.projects,
+        tech_stack: parsed.tech_stack,
+    })
 }
 
 #[tauri::command]
@@ -1339,6 +1372,7 @@ pub fn run() {
             update_question,
             export_questions,
             mark_question_wrong,
+            parse_resume,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

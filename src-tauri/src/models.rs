@@ -217,3 +217,13 @@ pub struct InterviewReport2 {
     pub summary: String,
     pub messages: Vec<InterviewMessage>,
 }
+
+#[derive(Debug, Serialize)]
+pub struct InterviewSummary {
+    pub id: i64,
+    pub created_at: String,
+    pub candidate: String,
+    pub tags: String,
+    pub average_score: f64,
+    pub dimension_scores: DimensionScores,
+}

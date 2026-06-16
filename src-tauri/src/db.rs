@@ -337,6 +337,48 @@ pub async fn finish_interview2(
     Ok(())
 }
 
+// 已完成面试列表：返回 (id, created_at, candidate, tags, average_score, dimension_scores_json)
+pub async fn list_finished_interviews(
+    pool: &SqlitePool,
+) -> Result<Vec<(i64, String, String, String, f64, String)>, String> {
+    sqlx::query_as::<_, (i64, String, String, String, f64, String)>(
+        "SELECT mi.id, mi.created_at, COALESCE(r.candidate, ''), mi.tags, mi.average_score, mi.dimension_scores
+         FROM mock_interviews mi
+         LEFT JOIN resumes r ON mi.resume_id = r.id
+         WHERE mi.status = 'finished'
+         ORDER BY mi.id DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("读取面试记录失败: {}", e))
+}
+
+// 单场面试元信息：(average_score, dimension_scores_json, summary)
+pub async fn get_interview_meta(pool: &SqlitePool, interview_id: i64) -> Result<(f64, String, String), String> {
+    sqlx::query_as::<_, (f64, String, String)>(
+        "SELECT average_score, dimension_scores, summary FROM mock_interviews WHERE id = ?",
+    )
+    .bind(interview_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("读取面试详情失败: {}", e))
+}
+
+// 删除面试及其对话（显式两步，不依赖 FK cascade）
+pub async fn delete_interview_cascade(pool: &SqlitePool, interview_id: i64) -> Result<(), String> {
+    sqlx::query("DELETE FROM interview_messages WHERE interview_id = ?")
+        .bind(interview_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("删除对话失败: {}", e))?;
+    sqlx::query("DELETE FROM mock_interviews WHERE id = ?")
+        .bind(interview_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("删除面试失败: {}", e))?;
+    Ok(())
+}
+
 async fn seed_default_topics(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     for (name, description) in DEFAULT_TOPICS {
         sqlx::query(
@@ -792,6 +834,41 @@ mod tests {
         assert_eq!(pcap, 5);
         assert_eq!(fcap, 5);
         assert_eq!(rid, resume_id);
+
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn list_and_delete_interview_roundtrip() {
+        let db_path = test_db_path("history");
+        let pool = init_db(db_path.clone()).await.unwrap();
+
+        let resume_id = create_resume(&pool, "txt", "王五", "[]", r#"["Go"]"#).await.unwrap();
+        let iv_id = create_interview2(&pool, resume_id, 5, 5, "Go").await.unwrap();
+        add_interview_message(&pool, iv_id, "interviewer", "project", "介绍项目？").await.unwrap();
+        add_interview_message(&pool, iv_id, "candidate", "project", "我做了X").await.unwrap();
+        finish_interview2(&pool, iv_id, 80.0, r#"{"project_depth":85,"fundamental_solidity":75,"communication":80}"#, "总体不错").await.unwrap();
+
+        let rows = list_finished_interviews(&pool).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let (id, _created, candidate, tags, avg, dim_json) = &rows[0];
+        assert_eq!(*id, iv_id);
+        assert_eq!(candidate, "王五");
+        assert_eq!(tags, "Go");
+        assert!((*avg - 80.0).abs() < 1e-6);
+        assert!(dim_json.contains("project_depth"));
+
+        let (avg2, dim2, summary) = get_interview_meta(&pool, iv_id).await.unwrap();
+        assert!((avg2 - 80.0).abs() < 1e-6);
+        assert!(dim2.contains("85"));
+        assert_eq!(summary, "总体不错");
+
+        delete_interview_cascade(&pool, iv_id).await.unwrap();
+        assert_eq!(list_finished_interviews(&pool).await.unwrap().len(), 0);
+        let msg_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM interview_messages WHERE interview_id = ?")
+            .bind(iv_id).fetch_one(&pool).await.unwrap();
+        assert_eq!(msg_count, 0);
 
         pool.close().await;
         let _ = std::fs::remove_file(db_path);

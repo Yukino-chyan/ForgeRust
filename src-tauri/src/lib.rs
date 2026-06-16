@@ -9,7 +9,7 @@ use crate::models::{
     ImportProgress, ImportQuestion, ImportResult,
     Question, SaveRecordInput, SessionRecord, Topic,
     TagStat, WrongQuestion,
-    ParsedResume, ResumeRecord, InterviewTurn, DimensionScores, InterviewReport2,
+    ParsedResume, ResumeRecord, InterviewTurn, DimensionScores, InterviewReport2, InterviewSummary,
 };
 use sqlx::SqlitePool;
 use std::path::PathBuf;
@@ -420,6 +420,47 @@ async fn finish_interview(
         summary,
         messages,
     })
+}
+
+#[tauri::command]
+async fn list_interviews(pool: tauri::State<'_, SqlitePool>) -> Result<Vec<InterviewSummary>, String> {
+    let rows = db::list_finished_interviews(&pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, created_at, candidate, tags, average_score, dim_json)| {
+            let dimension_scores: DimensionScores =
+                serde_json::from_str(&dim_json).unwrap_or(DimensionScores {
+                    project_depth: 0,
+                    fundamental_solidity: 0,
+                    communication: 0,
+                });
+            InterviewSummary { id, created_at, candidate, tags, average_score, dimension_scores }
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn get_interview_detail(
+    interview_id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<InterviewReport2, String> {
+    let (average_score, dim_json, summary) = db::get_interview_meta(&pool, interview_id).await?;
+    let dimension_scores: DimensionScores =
+        serde_json::from_str(&dim_json).unwrap_or(DimensionScores {
+            project_depth: 0,
+            fundamental_solidity: 0,
+            communication: 0,
+        });
+    let messages = db::get_interview_messages(&pool, interview_id).await?;
+    Ok(InterviewReport2 { interview_id, average_score, dimension_scores, summary, messages })
+}
+
+#[tauri::command]
+async fn delete_interview(
+    interview_id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<(), String> {
+    db::delete_interview_cascade(&pool, interview_id).await
 }
 
 #[tauri::command]
@@ -1335,6 +1376,9 @@ pub fn run() {
             start_interview,
             interview_respond,
             finish_interview,
+            list_interviews,
+            get_interview_detail,
+            delete_interview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

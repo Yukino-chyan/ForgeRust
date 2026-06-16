@@ -38,7 +38,6 @@ const parsing = ref(false);
 const resume = ref<ResumeRecord | null>(null);
 const projectCap = ref(5);
 const fundamentalCap = ref(5);
-const capPresets = [3, 5, 8];
 
 // interview 阶段
 const interviewId = ref<number | null>(null);
@@ -277,11 +276,15 @@ function reset() {
 
           <div class="field">
             <label class="step-label"><span class="step-no">3</span>环节轮数上限</label>
-            <div class="cap-row">
-              <span>项目</span>
-              <button v-for="n in capPresets" :key="'p'+n" :class="['choice-chip', { active: projectCap === n }]" @click="projectCap = n">{{ n }}</button>
-              <span class="cap-sep">八股</span>
-              <button v-for="n in capPresets" :key="'f'+n" :class="['choice-chip', { active: fundamentalCap === n }]" @click="fundamentalCap = n">{{ n }}</button>
+            <div class="cap-sliders">
+              <div class="cap-slider">
+                <div class="cap-slider-head"><span>项目</span><span class="cap-val">{{ projectCap }} 轮</span></div>
+                <input type="range" min="1" max="15" step="1" v-model.number="projectCap" class="slider" />
+              </div>
+              <div class="cap-slider">
+                <div class="cap-slider-head"><span>八股</span><span class="cap-val">{{ fundamentalCap }} 轮</span></div>
+                <input type="range" min="1" max="15" step="1" v-model.number="fundamentalCap" class="slider" />
+              </div>
             </div>
           </div>
 
@@ -386,11 +389,13 @@ function reset() {
 .proj-head { display: flex; justify-content: space-between; align-items: center; }
 .proj-sum { font-size: var(--fs-12); color: var(--text-muted); margin-top: 2px; }
 
-.cap-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.cap-row > span { font-size: var(--fs-13); color: var(--text-muted); }
-.cap-sep { margin-left: var(--sp-3); }
-.choice-chip { min-width: 44px; padding: 6px 12px; border-radius: var(--radius-md); font-size: var(--fs-13); color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); cursor: pointer; }
-.choice-chip.active { color: var(--text-on-accent); background: var(--accent); border-color: transparent; }
+.cap-sliders { display: flex; flex-direction: column; gap: var(--sp-3); }
+.cap-slider { display: flex; flex-direction: column; gap: 6px; }
+.cap-slider-head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-13); color: var(--text-muted); }
+.cap-val { color: var(--accent); font-family: var(--font-mono); font-weight: var(--fw-medium); }
+.slider { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 2px; background: var(--surface-2); outline: none; cursor: pointer; }
+.slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 2px solid var(--surface); box-shadow: var(--shadow-sm); cursor: pointer; }
+.slider::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 2px solid var(--surface); cursor: pointer; }
 
 .setup-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--border); }
 .setup-summary { font-size: var(--fs-13); color: var(--text-muted); }

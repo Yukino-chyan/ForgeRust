@@ -8,6 +8,7 @@ export type View =
   | "ai_generate"
   | "question_library"
   | "mock_interview"
+  | "interview_history"
   | "settings";
 
 defineProps<{
@@ -34,6 +35,7 @@ const primary: NavItem[] = [
   { view: "ai_generate",      label: "AI 出题",  icon: "Sparkles" },
   { view: "question_library", label: "题库管理", icon: "Library" },
   { view: "mock_interview",   label: "模拟面试", icon: "MessageSquare", badge: "MVP" },
+  { view: "interview_history", label: "面试记录", icon: "History" },
 ];
 
 const secondary: NavItem[] = [

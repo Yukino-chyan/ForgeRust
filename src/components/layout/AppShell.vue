@@ -11,6 +11,7 @@ import AIGenerate from "../AIGenerate.vue";
 import QuestionLibrary from "../QuestionLibrary.vue";
 import Settings from "../Settings.vue";
 import MockInterview from "../MockInterview.vue";
+import InterviewHistory from "../InterviewHistory.vue";
 import Icon from "../ui/Icon.vue";
 
 import { useImportProgress } from "../../composables/useImportProgress";
@@ -125,6 +126,11 @@ const importPercent = computed(() => {
 
       <MockInterview
         v-show="currentView === 'mock_interview'"
+      />
+
+      <InterviewHistory
+        v-show="currentView === 'interview_history'"
+        :is-active="currentView === 'interview_history'"
       />
 
       <div v-if="false" class="coming-soon">

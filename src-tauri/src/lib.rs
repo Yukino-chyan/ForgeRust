@@ -239,6 +239,7 @@ fn build_interviewer_system(phase: &str, resume_brief: &str, used: i32, cap: i32
         "你是一名资深技术面试官，正在进行模拟面试的【{phase_cn}】环节。\
         候选人简历摘要：{resume_brief}。\
         要求：每次只问一个问题；问题要顺着候选人上一轮回答自然深入或转向；语气专业简洁，不要寒暄过多；不要给出答案或点评。\
+        无论候选人是否作答（包括回答「不知道」或答非所问），你都必须有回应：要么换个角度或换个问题继续，要么用一句话礼貌收尾本环节，绝不能返回空白。\
         本环节还可进行约 {remaining} 轮。若你认为本环节已充分考察，可在回复最后另起一行输出 {mark} 表示提前结束本环节。\
         {phase_extra}",
         phase_cn = phase_cn,
@@ -267,6 +268,25 @@ async fn resume_brief(pool: &SqlitePool, resume_id: i64) -> String {
     }
 }
 
+// 调一次流式生成，逐 token 发 interview-token 事件，返回完整文本
+async fn generate_interviewer_text(
+    app: &tauri::AppHandle,
+    api_url: &str,
+    api_key: &str,
+    model: &str,
+    messages: Vec<serde_json::Value>,
+    interview_id: i64,
+) -> Result<String, String> {
+    let app_cb = app.clone();
+    llm_client::call_api_stream(api_url, api_key, model, messages, 0.6, 1024, move |token| {
+        let _ = app_cb.emit(
+            "interview-token",
+            serde_json::json!({ "interviewId": interview_id, "chunk": token }),
+        );
+    })
+    .await
+}
+
 // 生成一轮面试官提问：组装消息→流式生成（发 interview-token 事件）→剥离 PHASE_DONE→落库→推进状态机
 async fn run_interviewer_turn(
     pool: &SqlitePool,
@@ -292,25 +312,37 @@ async fn run_interviewer_turn(
         let role = if m.role == "interviewer" { "assistant" } else { "user" };
         messages.push(serde_json::json!({"role": role, "content": m.content}));
     }
-    // 若是本环节第一问且无历史，给个起始 user 提示，促使模型开口
+    // 起始/换环节时给明确提示，避免模型把上下文误当成「要收尾」而沉默
     if history.is_empty() {
         messages.push(serde_json::json!({"role":"user","content":"请开始面试，先做简短开场再提出第一个问题。"}));
+    } else if used == 0 {
+        // 刚切换到新环节（如项目结束后进入八股）：明确要求开启新环节的提问，不要收尾
+        let nudge = if current_phase == "fundamental" {
+            "现在进入【技术八股】环节。请不要收尾，直接提出第一个考察计算机基础（如计算机网络、操作系统、数据结构等）的问题。"
+        } else {
+            "请提出本环节的第一个问题。"
+        };
+        messages.push(serde_json::json!({"role":"user","content": nudge}));
     }
 
-    let app_for_cb = app.clone();
-    let full = llm_client::call_api_stream(
-        api_url, api_key, model, messages, 0.6, 1024,
-        move |token| {
-            let _ = app_for_cb.emit("interview-token", serde_json::json!({
-                "interviewId": interview_id,
-                "chunk": token,
-            }));
-        },
-    )
-    .await?;
+    // 流式生成；若返回空（模型偶发沉默），用相同上下文重试一次
+    let messages_retry = messages.clone();
+    let full = generate_interviewer_text(app, api_url, api_key, model, messages, interview_id).await?;
+    let (mut clean_text, mut phase_done) = strip_phase_done(&full);
+    if clean_text.is_empty() {
+        let full2 = generate_interviewer_text(app, api_url, api_key, model, messages_retry, interview_id).await?;
+        let (c2, p2) = strip_phase_done(&full2);
+        clean_text = c2;
+        phase_done = p2;
+    }
 
-    let (clean_text, phase_done) = strip_phase_done(&full);
-    let message = if clean_text.is_empty() { "（面试官沉默了，请稍后重试）".to_string() } else { clean_text };
+    // 重试后仍空 → 优雅收尾，直接进入复盘，而非死占位
+    let silent = clean_text.is_empty();
+    let message = if silent {
+        "好的，今天的面试就先到这里，感谢你的参与。".to_string()
+    } else {
+        clean_text
+    };
 
     // 落库本轮面试官提问
     db::add_interview_message(pool, interview_id, "interviewer", &current_phase, &message).await?;
@@ -322,9 +354,12 @@ async fn run_interviewer_turn(
     } else {
         (db::count_phase_questions(pool, interview_id, "project").await? as i32, used_after)
     };
-    let (next_phase, finished) = decide_phase(
+    let (next_phase, mut finished) = decide_phase(
         &current_phase, project_used, project_cap, fundamental_used, fundamental_cap, phase_done,
     );
+    if silent {
+        finished = true; // 连续两次空回复，结束面试进入复盘
+    }
     if next_phase != current_phase {
         db::set_interview_phase(pool, interview_id, &next_phase).await?;
     }

@@ -1,9 +1,12 @@
-<script setup lang="ts">
-import { computed, inject, nextTick, onUnmounted, ref, shallowRef, watch, type Ref } from "vue";
+﻿<script setup lang="ts">
+import { computed, inject, nextTick, onUnmounted, ref, watch, type Ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import Icon from "./ui/Icon.vue";
+import ScoreRadar from "./ui/ScoreRadar.vue";
 import { extractPdfText } from "../utils/pdfText";
 import { useInterviewStream } from "../composables/useInterviewStream";
+import { useToast } from "../composables/useToast";
+import { useSpeechRecognition } from "../composables/useSpeechRecognition";
 
 import * as echarts from "echarts/core";
 import { RadarChart } from "echarts/charts";
@@ -21,6 +24,9 @@ interface InterviewReport {
   average_score: number;
   dimension_scores: DimensionScores;
   summary: string;
+  weak_points: string[];
+  recommended_tags: string[];
+  action_items: string[];
   messages: { role: string; phase: string; content: string; seq: number }[];
 }
 
@@ -28,6 +34,7 @@ const apiKey = inject<Ref<string>>("apiKey", ref(""));
 const hasApiKey = computed(() => !!apiKey.value.trim());
 
 const { streamingText, ensureListener, resetStream, stop } = useInterviewStream();
+const toast = useToast();
 
 const stage = ref<"resume" | "interview" | "report">("resume");
 const loading = ref(false);
@@ -38,6 +45,11 @@ const parsing = ref(false);
 const resume = ref<ResumeRecord | null>(null);
 const projectCap = ref(5);
 const fundamentalCap = ref(5);
+const targetRole = ref("后端开发工程师");
+const interviewDirection = ref("Rust / 后端");
+const interviewDifficulty = ref("standard");
+const followUpIntensity = ref("normal");
+const practiceMode = ref("balanced");
 
 // interview 阶段
 const interviewId = ref<number | null>(null);
@@ -53,10 +65,10 @@ const confirmingExit = ref(false);
 
 // report 阶段
 const report = ref<InterviewReport | null>(null);
-const radarEl = ref<HTMLElement | null>(null);
-const radarChart = shallowRef<echarts.ECharts | null>(null);
-
 const phaseLabel = computed(() => (currentPhase.value === "project" ? "项目环节" : "八股环节"));
+const difficultyLabel = computed(() => ({ easy: "基础", standard: "标准", hard: "进阶" }[interviewDifficulty.value] ?? "标准"));
+const followUpLabel = computed(() => ({ light: "轻追问", normal: "中等追问", strong: "强追问" }[followUpIntensity.value] ?? "中等追问"));
+const modeLabel = computed(() => ({ balanced: "综合练习", project_only: "只练项目", fundamental_only: "只练八股" }[practiceMode.value] ?? "综合练习"));
 const elapsedText = computed(() => {
   const m = Math.floor(elapsed.value / 60).toString().padStart(2, "0");
   const s = (elapsed.value % 60).toString().padStart(2, "0");
@@ -80,36 +92,7 @@ function scrollTranscript() {
   });
 }
 
-function renderRadar() {
-  if (!radarEl.value || !report.value) return;
-  if (!radarChart.value) radarChart.value = echarts.init(radarEl.value);
-  const d = report.value.dimension_scores;
-  radarChart.value.setOption({
-    tooltip: {},
-    radar: {
-      indicator: [
-        { name: "项目深度", max: 100 },
-        { name: "八股扎实度", max: 100 },
-        { name: "表达逻辑", max: 100 },
-      ],
-      radius: "65%",
-    },
-    series: [{
-      type: "radar",
-      data: [{ value: [d.project_depth, d.fundamental_solidity, d.communication], name: "本场表现" }],
-      areaStyle: { opacity: 0.2 },
-    }],
-  });
-}
-
-// 进入 report 阶段且 DOM 就绪后渲染
-watch([stage, report], () => {
-  if (stage.value === "report" && report.value) {
-    nextTick(renderRadar);
-  }
-});
-
-onUnmounted(() => { stopClock(); stop(); radarChart.value?.dispose(); });
+onUnmounted(() => { stopClock(); stop(); });
 
 // ── resume 阶段 ──
 async function onPickPdf(e: Event) {
@@ -145,6 +128,11 @@ async function startInterview() {
       resumeId: resume.value.id,
       projectCap: projectCap.value,
       fundamentalCap: fundamentalCap.value,
+      targetRole: targetRole.value,
+      direction: interviewDirection.value,
+      interviewDifficulty: interviewDifficulty.value,
+      followUpIntensity: followUpIntensity.value,
+      practiceMode: practiceMode.value,
     });
     interviewId.value = id;
     applyTurn(turn);
@@ -158,6 +146,31 @@ async function startInterview() {
   }
 }
 
+function appendSpeechText(text: string) {
+  answer.value = answer.value.trim()
+    ? `${answer.value.trim()} ${text}`
+    : text;
+}
+
+const speech = useSpeechRecognition(appendSpeechText);
+
+watch(speech.error, (err) => {
+  if (!err) return;
+  if (err === "unsupported") {
+    toast.warning("当前环境不支持语音输入", "可以继续使用键盘输入回答。");
+  } else if (err === "not-allowed" || err === "service-not-allowed") {
+    toast.error("麦克风权限被拒绝", "请允许应用访问麦克风后重试。");
+  } else if (err === "no-speech") {
+    toast.info("没有识别到语音", "可以再说一次或手动输入。");
+  } else {
+    toast.error("语音识别失败", err);
+  }
+});
+
+function toggleSpeech() {
+  const ok = speech.toggle();
+  if (!ok) toast.warning("当前环境不支持语音输入", "Web Speech API 不可用。");
+}
 // ── interview 阶段 ──
 function applyTurn(turn: InterviewTurn) {
   currentPrompt.value = turn.message;
@@ -287,9 +300,50 @@ function reset() {
               </div>
             </div>
           </div>
+          <div class="field">
+            <label class="step-label"><span class="step-no">4</span>面试目标配置</label>
+            <div class="interview-config">
+              <div class="config-row two">
+                <div>
+                  <label>目标岗位</label>
+                  <input v-model="targetRole" class="fr-input" type="text" placeholder="后端开发工程师" />
+                </div>
+                <div>
+                  <label>岗位方向</label>
+                  <input v-model="interviewDirection" class="fr-input" type="text" placeholder="Rust / 后端" />
+                </div>
+              </div>
+              <div class="config-row three">
+                <div>
+                  <label>面试难度</label>
+                  <select v-model="interviewDifficulty" class="fr-input">
+                    <option value="easy">基础</option>
+                    <option value="standard">标准</option>
+                    <option value="hard">进阶</option>
+                  </select>
+                </div>
+                <div>
+                  <label>追问强度</label>
+                  <select v-model="followUpIntensity" class="fr-input">
+                    <option value="light">轻追问</option>
+                    <option value="normal">中等追问</option>
+                    <option value="strong">强追问</option>
+                  </select>
+                </div>
+                <div>
+                  <label>练习模式</label>
+                  <select v-model="practiceMode" class="fr-input">
+                    <option value="balanced">综合练习</option>
+                    <option value="project_only">只练项目</option>
+                    <option value="fundamental_only">只练八股</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
 
           <div class="setup-footer">
-            <span class="setup-summary">项目 {{ projectCap }} 轮 · 八股 {{ fundamentalCap }} 轮</span>
+            <span class="setup-summary">{{ targetRole }} · {{ difficultyLabel }} · {{ followUpLabel }} · {{ modeLabel }} · 项目 {{ projectCap }} 轮 · 八股 {{ fundamentalCap }} 轮</span>
             <button class="fr-btn fr-btn-primary" :disabled="loading" @click="startInterview">
               <Icon name="MessageSquare" :size="14" /><span>{{ loading ? "准备中…" : "开始面试" }}</span>
             </button>
@@ -335,6 +389,15 @@ function reset() {
         <label>你的回答</label>
         <textarea v-model="answer" class="fr-input answer-input" :rows="6" :disabled="loading" placeholder="像真实面试一样组织回答：先结论，再展开关键点。"></textarea>
         <div class="answer-actions">
+          <button
+            class="icon-btn mic-btn"
+            :class="{ active: speech.listening.value }"
+            :disabled="loading || !speech.supported.value"
+            :title="speech.supported.value ? (speech.listening.value ? '停止语音输入' : '语音输入') : '当前环境不支持语音输入'"
+            @click="toggleSpeech"
+          >
+            <Icon :name="speech.listening.value ? 'MicOff' : 'Mic'" :size="15" />
+          </button>
           <button class="fr-btn fr-btn-primary" :disabled="loading || !answer.trim()" @click="submitAnswer"><Icon name="Send" :size="14" /><span>{{ loading ? "提交中…" : "回答" }}</span></button>
         </div>
       </div>
@@ -354,7 +417,30 @@ function reset() {
 
       <div class="fr-card dim-card">
         <h3>能力维度</h3>
-        <div ref="radarEl" class="radar"></div>
+        <ScoreRadar :scores="report.dimension_scores" />
+      </div>
+      <div class="fr-card action-card">
+        <h3>可行动复盘</h3>
+        <div class="action-grid">
+          <div>
+            <span class="action-label">薄弱点</span>
+            <ul>
+              <li v-for="item in report.weak_points" :key="item">{{ item }}</li>
+            </ul>
+          </div>
+          <div>
+            <span class="action-label">建议重练标签</span>
+            <div class="chips">
+              <span v-for="tag in report.recommended_tags" :key="tag" class="fr-chip fr-chip-accent">{{ tag }}</span>
+            </div>
+          </div>
+          <div>
+            <span class="action-label">下一步行动</span>
+            <ul>
+              <li v-for="item in report.action_items" :key="item">{{ item }}</li>
+            </ul>
+          </div>
+        </div>
       </div>
 
       <div class="transcript-replay">
@@ -390,6 +476,11 @@ function reset() {
 .proj-sum { font-size: var(--fs-12); color: var(--text-muted); margin-top: 2px; }
 
 .cap-sliders { display: flex; flex-direction: column; gap: var(--sp-3); }
+.interview-config { display: flex; flex-direction: column; gap: var(--sp-3); }
+.config-row { display: grid; gap: var(--sp-3); }
+.config-row.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.config-row.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.config-row label { display: block; margin-bottom: 6px; font-size: var(--fs-12); color: var(--text-muted); font-weight: var(--fw-medium); }
 .cap-slider { display: flex; flex-direction: column; gap: 6px; }
 .cap-slider-head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-13); color: var(--text-muted); }
 .cap-val { color: var(--accent); font-family: var(--font-mono); font-weight: var(--fw-medium); }
@@ -443,14 +534,24 @@ function reset() {
 .report-hero h2 { font-size: var(--fs-28); color: var(--accent); margin: var(--sp-1) 0; }
 .report-hero p { color: var(--text-muted); line-height: 1.6; }
 .dim-card { display: flex; flex-direction: column; gap: var(--sp-3); }
-.dim-card h3 { font-size: var(--fs-14); font-weight: var(--fw-semibold); }
-.radar { width: 100%; height: 280px; }
-
+.dim-card h3, .action-card h3 { font-size: var(--fs-14); font-weight: var(--fw-semibold); }
+.action-card { display: flex; flex-direction: column; gap: var(--sp-3); }
+.action-grid { display: grid; grid-template-columns: 1fr 1fr 1.2fr; gap: var(--sp-4); }
+.action-label { display: block; margin-bottom: var(--sp-2); font-size: var(--fs-12); color: var(--text-muted); font-weight: var(--fw-medium); }
+.action-card ul { display: flex; flex-direction: column; gap: 6px; color: var(--text); font-size: var(--fs-13); line-height: 1.5; }
+.action-card li { list-style: disc; margin-left: 16px; }
 .icon-btn { width: 26px; height: 26px; border-radius: var(--radius-sm); color: var(--text-subtle); display: inline-flex; align-items: center; justify-content: center; }
 .icon-btn.danger:hover { color: var(--danger); background: var(--danger-soft); }
+.mic-btn.active { color: var(--danger); background: var(--danger-soft); }
 
 @media (max-width: 760px) {
   .report-hero, .video-bar { flex-direction: column; }
+  .config-row.two, .config-row.three, .action-grid { grid-template-columns: 1fr; }
   .candidate-tile { width: 100%; height: 80px; flex-direction: row; }
 }
 </style>
+
+
+
+
+

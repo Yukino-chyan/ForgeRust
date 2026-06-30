@@ -1,31 +1,33 @@
-mod db;
-mod models;
-mod llm_client;
 mod config;
+mod db;
+mod llm_client;
+mod models;
 
 use crate::config::AppConfig;
 use crate::models::{
-    DashboardStats, DayPoint, EvaluateResponse, GeneratedQuestion, GenerateProgress,
-    ImportProgress, ImportQuestion, ImportResult,
-    Question, SaveRecordInput, SessionRecord, Topic,
-    TagStat, WrongQuestion,
-    ParsedResume, ResumeRecord, InterviewTurn, DimensionScores, InterviewReport2, InterviewSummary,
+    DashboardStats, DayPoint, DimensionScores, EvaluateResponse, GenerateProgress,
+    GeneratedQuestion, ImportProgress, ImportQuestion, ImportResult, InterviewReport2,
+    InterviewSettings, InterviewSummary, InterviewTurn, ParsedResume, Question, ResumeRecord,
+    SaveRecordInput, SessionRecord, TagStat, Topic, WrongQuestion,
 };
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::Manager;
 use tauri::Emitter;
+use tauri::Manager;
 
+async fn init_managed_database_pool(db_path: PathBuf) -> Result<SqlitePool, String> {
+    db::init_db(db_path)
+        .await
+        .map_err(|e| format!("数据库初始化失败: {}", e))
+}
 // config_dir 单独作为 state，用 newtype 避免与其他 PathBuf 冲突
 struct ConfigDir(PathBuf);
 
 // ── 配置相关命令 ──────────────────────────────────────────
 
 #[tauri::command]
-fn get_api_config(
-    config: tauri::State<'_, Mutex<AppConfig>>,
-) -> Result<AppConfig, String> {
+fn get_api_config(config: tauri::State<'_, Mutex<AppConfig>>) -> Result<AppConfig, String> {
     config.lock().map(|c| c.clone()).map_err(|e| e.to_string())
 }
 
@@ -40,7 +42,11 @@ fn set_api_config(
     let mut cfg = config.lock().map_err(|e| e.to_string())?;
     cfg.api_key = api_key;
     cfg.api_url = api_url;
-    cfg.model = if model.trim().is_empty() { cfg.model.clone() } else { model };
+    cfg.model = if model.trim().is_empty() {
+        cfg.model.clone()
+    } else {
+        model
+    };
     cfg.save(&config_dir.0)
 }
 
@@ -52,17 +58,27 @@ async fn save_training_session(
     tags: Vec<String>,
     pool: tauri::State<'_, SqlitePool>,
 ) -> Result<(), String> {
-    if records.is_empty() { return Ok(()); }
+    if records.is_empty() {
+        return Ok(());
+    }
 
     let total = records.len() as i32;
-    let correct = records.iter().filter(|r| {
-        if r.skipped { return false; }
-        r.is_correct.unwrap_or(false) || (!r.is_correct.is_some() && r.score >= 60)
-    }).count() as i32;
+    let correct = records
+        .iter()
+        .filter(|r| {
+            if r.skipped {
+                return false;
+            }
+            r.is_correct.unwrap_or(false) || (!r.is_correct.is_some() && r.score >= 60)
+        })
+        .count() as i32;
     let skipped = records.iter().filter(|r| r.skipped).count() as i32;
     let scored: Vec<_> = records.iter().filter(|r| r.score >= 0).collect();
-    let avg = if scored.is_empty() { 0.0 }
-              else { scored.iter().map(|r| r.score as f64).sum::<f64>() / scored.len() as f64 };
+    let avg = if scored.is_empty() {
+        0.0
+    } else {
+        scored.iter().map(|r| r.score as f64).sum::<f64>() / scored.len() as f64
+    };
 
     let session_id: i64 = sqlx::query_scalar(
         "INSERT INTO training_sessions (total_count, correct_count, average_score, skipped_count, tags)
@@ -130,7 +146,7 @@ async fn get_wrong_questions(
          ) r ON r.question_id = q.id
          LEFT JOIN wrong_book_manual m ON m.question_id = q.id
          WHERE r.question_id IS NOT NULL OR m.question_id IS NOT NULL
-         ORDER BY wrong_count DESC, last_attempt DESC"
+         ORDER BY wrong_count DESC, last_attempt DESC",
     )
     .fetch_all(&*pool)
     .await
@@ -163,7 +179,9 @@ async fn generate_interview_from_ids(
     if question_ids.is_empty() {
         return Err("没有可练习的错题".into());
     }
-    let placeholders = question_ids.iter().enumerate()
+    let placeholders = question_ids
+        .iter()
+        .enumerate()
         .map(|(i, _)| format!("?{}", i + 1))
         .collect::<Vec<_>>()
         .join(", ");
@@ -175,15 +193,16 @@ async fn generate_interview_from_ids(
     for id in &question_ids {
         query = query.bind(id);
     }
-    query.fetch_all(&*pool).await.map_err(|e| format!("组卷失败: {}", e))
+    query
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| format!("组卷失败: {}", e))
 }
 
 // ── 题库命令 ──────────────────────────────────────────────
 
 #[tauri::command]
-async fn list_topics(
-    pool: tauri::State<'_, SqlitePool>,
-) -> Result<Vec<Topic>, String> {
+async fn list_topics(pool: tauri::State<'_, SqlitePool>) -> Result<Vec<Topic>, String> {
     db::list_topics(&pool)
         .await
         .map_err(|e| format!("读取考点失败: {}", e))
@@ -197,7 +216,6 @@ async fn create_topic(
 ) -> Result<Topic, String> {
     db::create_topic(&pool, &name, description.as_deref().unwrap_or("")).await
 }
-
 
 // ── 对话式模拟面试命令（简历解析 / 流式对话 / 多维评分）──────────
 
@@ -221,7 +239,14 @@ async fn parse_resume(
     let projects_json = serde_json::to_string(&parsed.projects).unwrap_or_else(|_| "[]".into());
     let tech_stack_json = serde_json::to_string(&parsed.tech_stack).unwrap_or_else(|_| "[]".into());
 
-    let id = db::create_resume(&pool, &raw_text, &parsed.candidate, &projects_json, &tech_stack_json).await?;
+    let id = db::create_resume(
+        &pool,
+        &raw_text,
+        &parsed.candidate,
+        &projects_json,
+        &tech_stack_json,
+    )
+    .await?;
 
     Ok(ResumeRecord {
         id,
@@ -232,25 +257,48 @@ async fn parse_resume(
 }
 
 // 构建某环节的 system prompt
-fn build_interviewer_system(phase: &str, resume_brief: &str, used: i32, cap: i32) -> String {
+fn build_interviewer_system(
+    phase: &str,
+    resume_brief: &str,
+    used: i32,
+    cap: i32,
+    settings: &InterviewSettings,
+) -> String {
     let remaining = (cap - used).max(0);
-    let phase_cn = if phase == "project" { "项目经历" } else { "技术八股（基础原理）" };
+    let phase_label = if phase == "project" {
+        "项目经历"
+    } else {
+        "计算机基础"
+    };
+    let mode_hint = match settings.practice_mode.as_str() {
+        "project_only" => "本场只练项目经历，不进入八股环节。",
+        "fundamental_only" => "本场只练技术八股，不追问项目经历。",
+        _ => "本场按项目经历和技术八股两部分推进。",
+    };
+    let intensity_hint = match settings.follow_up_intensity.as_str() {
+        "light" => "追问强度偏轻，优先帮助候选人完整表达。",
+        "strong" => "追问强度偏强，要持续追问取舍、边界、失败案例和量化结果。",
+        _ => "追问强度适中，保持真实面试节奏。",
+    };
+    let phase_extra = if phase == "project" {
+        "项目环节：围绕真实项目追问技术选型、难点、权衡、量化结果和复盘经验。"
+    } else {
+        "八股环节：覆盖计算机网络、操作系统、数据结构、数据库、计算机组成原理，并结合候选人技术栈由浅入深。"
+    };
     format!(
-        "你是一名资深技术面试官，正在进行模拟面试的【{phase_cn}】环节。\
-        候选人简历摘要：{resume_brief}。\
-        要求：每次只问一个问题；问题要顺着候选人上一轮回答自然深入或转向；语气专业简洁，不要寒暄过多；不要给出答案或点评。\
-        无论候选人是否作答（包括回答「不知道」或答非所问），你都必须有回应：要么换个角度或换个问题继续，要么用一句话礼貌收尾本环节，绝不能返回空白。\
-        本环节还可进行约 {remaining} 轮。若你认为本环节已充分考察，可在回复最后另起一行输出 {mark} 表示提前结束本环节。\
-        {phase_extra}",
-        phase_cn = phase_cn,
+        "你是一名资深技术面试官，正在进行【{phase_label}】环节。所有输出必须使用中文。候选人简历摘要：{resume_brief}。面试目标：目标岗位={target_role}；岗位方向={direction}；难度={difficulty}；追问强度={intensity}；练习模式={mode}。{mode_hint}{intensity_hint}要求：每次只问一个问题；问题要顺着候选人上一轮回答自然深入或转向；语气专业简洁，不要寒暄过多；不要给出答案或点评。无论候选人是否作答，包括回答不知道或答非所问，你都必须有回应：要么换个角度或换个问题继续，要么用一句话礼貌收尾本环节，绝不能返回空白。本环节还可进行约 {remaining} 轮。若你认为本环节已充分考察，可在回复最后另起一行输出 {mark} 表示提前结束本环节。{phase_extra}",
+        phase_label = phase_label,
         resume_brief = resume_brief,
+        target_role = settings.target_role,
+        direction = settings.direction,
+        difficulty = settings.interview_difficulty,
+        intensity = settings.follow_up_intensity,
+        mode = settings.practice_mode,
+        mode_hint = mode_hint,
+        intensity_hint = intensity_hint,
         remaining = remaining,
         mark = PHASE_DONE_MARK,
-        phase_extra = if phase == "project" {
-            "项目环节：围绕候选人真实项目追问技术选型、难点、权衡、量化结果。"
-        } else {
-            "八股环节：优先考察通用计算机基础知识——计算机网络、操作系统、数据结构与算法、数据库、计算机组成原理等核心科目都应覆盖到，再结合候选人的技术栈深入。即使简历未提及这些基础，也要像真实面试一样照常提问，由浅入深。"
-        }
+        phase_extra = phase_extra,
     )
 }
 
@@ -262,13 +310,60 @@ async fn resume_brief(pool: &SqlitePool, resume_id: i64) -> String {
                 serde_json::from_str(&projects_json).unwrap_or_default();
             let tech: Vec<String> = serde_json::from_str(&tech_json).unwrap_or_default();
             let proj_names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
-            format!("候选人 {}；技术栈 [{}]；项目 [{}]", candidate, tech.join("、"), proj_names.join("、"))
+            format!(
+                "候选人 {}；技术栈 [{}]；项目 [{}]",
+                candidate,
+                tech.join("、"),
+                proj_names.join("、")
+            )
         }
         Err(_) => String::new(),
     }
 }
 
 // 调一次流式生成，逐 token 发 interview-token 事件，返回完整文本
+
+fn build_action_plan(
+    scores: &DimensionScores,
+    messages: &[crate::models::InterviewMessage],
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut weak_points = Vec::new();
+    let mut recommended_tags = Vec::new();
+    let mut action_items = Vec::new();
+
+    if scores.project_depth < 70 {
+        weak_points.push("项目深度和技术取舍说明不足".to_string());
+        recommended_tags.push("项目复盘".to_string());
+        action_items
+            .push("重写一段项目经历：按背景、技术取舍、量化结果、踩坑复盘四部分组织。".to_string());
+    }
+    if scores.fundamental_solidity < 70 {
+        weak_points.push("计算机基础掌握不够扎实".to_string());
+        recommended_tags.extend([
+            "操作系统".to_string(),
+            "计算机网络".to_string(),
+            "数据库".to_string(),
+        ]);
+        action_items.push("从薄弱基础标签里选两个专题，各完成一组针对性训练。".to_string());
+    }
+    if scores.communication < 70 {
+        weak_points.push("表达结构和答题层次需要加强".to_string());
+        recommended_tags.push("表达训练".to_string());
+        action_items.push("回答时先给结论，再用 2 到 3 个分点展开原因、例子和边界。".to_string());
+    }
+    if weak_points.is_empty() {
+        weak_points.push("本场没有明显短板".to_string());
+        recommended_tags.push("高强度追问".to_string());
+        action_items.push("下一场可以提高难度或追问强度，训练更接近真实面试的压力。".to_string());
+    }
+    if messages.iter().filter(|m| m.role == "candidate").count() < 2 {
+        action_items.push("至少完成两轮完整回答后再重点参考复盘评分。".to_string());
+    }
+    recommended_tags.sort();
+    recommended_tags.dedup();
+    (weak_points, recommended_tags, action_items)
+}
+
 async fn generate_interviewer_text(
     app: &tauri::AppHandle,
     api_url: &str,
@@ -297,19 +392,44 @@ async fn run_interviewer_turn(
     interview_id: i64,
 ) -> Result<InterviewTurn, String> {
     // 注：`app.emit` 依赖文件顶部已有的 `use tauri::Emitter;`（lib.rs:17），此处不再重复 import。
-    let (current_phase, project_cap, fundamental_cap, resume_id) =
-        db::get_interview_phase(pool, interview_id).await?;
+    let (
+        current_phase,
+        project_cap,
+        fundamental_cap,
+        resume_id,
+        target_role,
+        direction,
+        interview_difficulty,
+        follow_up_intensity,
+        practice_mode,
+    ) = db::get_interview_phase(pool, interview_id).await?;
     let used = db::count_phase_questions(pool, interview_id, &current_phase).await? as i32;
 
     let brief = resume_brief(pool, resume_id).await;
-    let cap = if current_phase == "project" { project_cap } else { fundamental_cap };
-    let system = build_interviewer_system(&current_phase, &brief, used, cap);
+    let cap = if current_phase == "project" {
+        project_cap
+    } else {
+        fundamental_cap
+    };
+    let settings = InterviewSettings {
+        target_role,
+        direction,
+        interview_difficulty,
+        follow_up_intensity,
+        practice_mode,
+    };
+    let system = build_interviewer_system(&current_phase, &brief, used, cap, &settings);
 
     // 组装消息：system + 历史（interviewer→assistant, candidate→user）
     let history = db::get_interview_messages(pool, interview_id).await?;
-    let mut messages: Vec<serde_json::Value> = vec![serde_json::json!({"role":"system","content":system})];
+    let mut messages: Vec<serde_json::Value> =
+        vec![serde_json::json!({"role":"system","content":system})];
     for m in &history {
-        let role = if m.role == "interviewer" { "assistant" } else { "user" };
+        let role = if m.role == "interviewer" {
+            "assistant"
+        } else {
+            "user"
+        };
         messages.push(serde_json::json!({"role": role, "content": m.content}));
     }
     // 起始/换环节时给明确提示，避免模型把上下文误当成「要收尾」而沉默
@@ -327,10 +447,13 @@ async fn run_interviewer_turn(
 
     // 流式生成；若返回空（模型偶发沉默），用相同上下文重试一次
     let messages_retry = messages.clone();
-    let full = generate_interviewer_text(app, api_url, api_key, model, messages, interview_id).await?;
+    let full =
+        generate_interviewer_text(app, api_url, api_key, model, messages, interview_id).await?;
     let (mut clean_text, mut phase_done) = strip_phase_done(&full);
     if clean_text.is_empty() {
-        let full2 = generate_interviewer_text(app, api_url, api_key, model, messages_retry, interview_id).await?;
+        let full2 =
+            generate_interviewer_text(app, api_url, api_key, model, messages_retry, interview_id)
+                .await?;
         let (c2, p2) = strip_phase_done(&full2);
         clean_text = c2;
         phase_done = p2;
@@ -350,12 +473,23 @@ async fn run_interviewer_turn(
     // 推进状态机：基于「问完这轮后」的计数判断下一环节/是否结束
     let used_after = used + 1;
     let (project_used, fundamental_used) = if current_phase == "project" {
-        (used_after, db::count_phase_questions(pool, interview_id, "fundamental").await? as i32)
+        (
+            used_after,
+            db::count_phase_questions(pool, interview_id, "fundamental").await? as i32,
+        )
     } else {
-        (db::count_phase_questions(pool, interview_id, "project").await? as i32, used_after)
+        (
+            db::count_phase_questions(pool, interview_id, "project").await? as i32,
+            used_after,
+        )
     };
     let (next_phase, mut finished) = decide_phase(
-        &current_phase, project_used, project_cap, fundamental_used, fundamental_cap, phase_done,
+        &current_phase,
+        project_used,
+        project_cap,
+        fundamental_used,
+        fundamental_cap,
+        phase_done,
     );
     if silent {
         finished = true; // 连续两次空回复，结束面试进入复盘
@@ -364,7 +498,11 @@ async fn run_interviewer_turn(
         db::set_interview_phase(pool, interview_id, &next_phase).await?;
     }
 
-    Ok(InterviewTurn { message, phase: current_phase, finished })
+    Ok(InterviewTurn {
+        message,
+        phase: current_phase,
+        finished,
+    })
 }
 
 #[tauri::command]
@@ -372,6 +510,11 @@ async fn start_interview(
     resume_id: i64,
     project_cap: i32,
     fundamental_cap: i32,
+    target_role: Option<String>,
+    direction: Option<String>,
+    interview_difficulty: Option<String>,
+    follow_up_intensity: Option<String>,
+    practice_mode: Option<String>,
     pool: tauri::State<'_, SqlitePool>,
     config: tauri::State<'_, Mutex<AppConfig>>,
     app: tauri::AppHandle,
@@ -380,9 +523,52 @@ async fn start_interview(
         let cfg = config.lock().map_err(|e| e.to_string())?;
         (cfg.api_url.clone(), cfg.api_key.clone(), cfg.model.clone())
     };
-    let pc = project_cap.clamp(1, 20);
-    let fc = fundamental_cap.clamp(0, 20);
-    let interview_id = db::create_interview2(&pool, resume_id, pc, fc, "").await?;
+    let role = target_role
+        .unwrap_or_else(|| "后端开发工程师".to_string())
+        .trim()
+        .to_string();
+    let direction = direction
+        .unwrap_or_else(|| "后端方向".to_string())
+        .trim()
+        .to_string();
+    let difficulty = interview_difficulty
+        .unwrap_or_else(|| "standard".to_string())
+        .trim()
+        .to_string();
+    let follow_up = follow_up_intensity
+        .unwrap_or_else(|| "normal".to_string())
+        .trim()
+        .to_string();
+    let mode = practice_mode
+        .unwrap_or_else(|| "balanced".to_string())
+        .trim()
+        .to_string();
+    let pc = if mode == "fundamental_only" {
+        0
+    } else {
+        project_cap.clamp(1, 20)
+    };
+    let fc = if mode == "project_only" {
+        0
+    } else {
+        fundamental_cap.clamp(1, 20)
+    };
+    let initial_phase = if pc <= 0 { "fundamental" } else { "project" };
+    let tags = format!("{} {}", direction, role).trim().to_string();
+    let interview_id = db::create_interview2(
+        &pool,
+        resume_id,
+        pc,
+        fc,
+        &tags,
+        initial_phase,
+        &role,
+        &direction,
+        &difficulty,
+        &follow_up,
+        &mode,
+    )
+    .await?;
     let turn = run_interviewer_turn(&pool, &app, &api_url, &api_key, &model, interview_id).await?;
     Ok((interview_id, turn))
 }
@@ -400,8 +586,12 @@ async fn interview_respond(
         (cfg.api_url.clone(), cfg.api_key.clone(), cfg.model.clone())
     };
     // 落库候选人回答（用当前环节）
-    let (current_phase, _pc, _fc, _rid) = db::get_interview_phase(&pool, interview_id).await?;
-    let ans = if answer.trim().is_empty() { "（跳过未作答）".to_string() } else { answer.trim().to_string() };
+    let (current_phase, ..) = db::get_interview_phase(&pool, interview_id).await?;
+    let ans = if answer.trim().is_empty() {
+        "（跳过未作答）".to_string()
+    } else {
+        answer.trim().to_string()
+    };
     db::add_interview_message(&pool, interview_id, "candidate", &current_phase, &ans).await?;
 
     run_interviewer_turn(&pool, &app, &api_url, &api_key, &model, interview_id).await
@@ -416,17 +606,30 @@ async fn finish_interview(
     let messages = db::get_interview_messages(&pool, interview_id).await?;
 
     // 候选人是否有过有效作答
-    let answered = messages.iter().any(|m| m.role == "candidate" && m.content.trim() != "（跳过未作答）" && !m.content.trim().is_empty());
+    let answered = messages.iter().any(|m| {
+        m.role == "candidate"
+            && m.content.trim() != "（跳过未作答）"
+            && !m.content.trim().is_empty()
+    });
 
     let (scores, summary) = if !answered {
         (
-            DimensionScores { project_depth: 0, fundamental_solidity: 0, communication: 0 },
+            DimensionScores {
+                project_depth: 0,
+                fundamental_solidity: 0,
+                communication: 0,
+            },
             "本次面试没有任何有效作答，无法评估表现。建议正式作答后再生成复盘。".to_string(),
         )
     } else {
-        let transcript = messages.iter()
+        let transcript = messages
+            .iter()
             .map(|m| {
-                let who = if m.role == "interviewer" { "面试官" } else { "候选人" };
+                let who = if m.role == "interviewer" {
+                    "面试官"
+                } else {
+                    "候选人"
+                };
                 format!("[{}] {}: {}", m.phase, who, m.content)
             })
             .collect::<Vec<_>>()
@@ -437,15 +640,22 @@ async fn finish_interview(
         };
         llm_client::evaluate_interview(&api_url, &api_key, &model, &transcript)
             .await
-            .unwrap_or_else(|_| (
-                DimensionScores { project_depth: 60, fundamental_solidity: 60, communication: 60 },
-                "评分服务暂时不可用，已记录对话。建议复盘低分环节。".to_string(),
-            ))
+            .unwrap_or_else(|_| {
+                (
+                    DimensionScores {
+                        project_depth: 60,
+                        fundamental_solidity: 60,
+                        communication: 60,
+                    },
+                    "评分服务暂时不可用，已记录对话。建议复盘低分环节。".to_string(),
+                )
+            })
     };
 
     let average_score =
         (scores.project_depth + scores.fundamental_solidity + scores.communication) as f64 / 3.0;
     let dim_json = serde_json::to_string(&scores).unwrap_or_else(|_| "{}".into());
+    let (weak_points, recommended_tags, action_items) = build_action_plan(&scores, &messages);
     db::finish_interview2(&pool, interview_id, average_score, &dim_json, &summary).await?;
 
     Ok(InterviewReport2 {
@@ -453,24 +663,40 @@ async fn finish_interview(
         average_score,
         dimension_scores: scores,
         summary,
+        weak_points,
+        recommended_tags,
+        action_items,
         messages,
     })
 }
 
 #[tauri::command]
-async fn list_interviews(pool: tauri::State<'_, SqlitePool>) -> Result<Vec<InterviewSummary>, String> {
+async fn list_interviews(
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<InterviewSummary>, String> {
     let rows = db::list_finished_interviews(&pool).await?;
     Ok(rows
         .into_iter()
-        .map(|(id, created_at, candidate, tags, average_score, dim_json)| {
-            let dimension_scores: DimensionScores =
-                serde_json::from_str(&dim_json).unwrap_or(DimensionScores {
-                    project_depth: 0,
-                    fundamental_solidity: 0,
-                    communication: 0,
-                });
-            InterviewSummary { id, created_at, candidate, tags, average_score, dimension_scores }
-        })
+        .map(
+            |(id, created_at, candidate, tags, average_score, dim_json, target_role, direction)| {
+                let dimension_scores: DimensionScores =
+                    serde_json::from_str(&dim_json).unwrap_or(DimensionScores {
+                        project_depth: 0,
+                        fundamental_solidity: 0,
+                        communication: 0,
+                    });
+                InterviewSummary {
+                    id,
+                    created_at,
+                    candidate,
+                    tags,
+                    average_score,
+                    dimension_scores,
+                    target_role,
+                    direction,
+                }
+            },
+        )
         .collect())
 }
 
@@ -487,7 +713,18 @@ async fn get_interview_detail(
             communication: 0,
         });
     let messages = db::get_interview_messages(&pool, interview_id).await?;
-    Ok(InterviewReport2 { interview_id, average_score, dimension_scores, summary, messages })
+    let (weak_points, recommended_tags, action_items) =
+        build_action_plan(&dimension_scores, &messages);
+    Ok(InterviewReport2 {
+        interview_id,
+        average_score,
+        dimension_scores,
+        summary,
+        weak_points,
+        recommended_tags,
+        action_items,
+        messages,
+    })
 }
 
 #[tauri::command]
@@ -559,17 +796,17 @@ async fn evaluate_answer(
     pool: tauri::State<'_, SqlitePool>,
     config: tauri::State<'_, Mutex<AppConfig>>,
 ) -> Result<EvaluateResponse, String> {
-    let q = sqlx::query_as::<_, Question>(
-        "SELECT * FROM questions WHERE id = ?",
-    )
-    .bind(question_id)
-    .fetch_one(&*pool)
-    .await
-    .map_err(|e| format!("查询题目失败: {}", e))?;
+    let q = sqlx::query_as::<_, Question>("SELECT * FROM questions WHERE id = ?")
+        .bind(question_id)
+        .fetch_one(&*pool)
+        .await
+        .map_err(|e| format!("查询题目失败: {}", e))?;
 
     match q.question_type.as_str() {
         "SINGLE" => {
-            let is_correct = user_answer.trim().eq_ignore_ascii_case(q.standard_answer.trim());
+            let is_correct = user_answer
+                .trim()
+                .eq_ignore_ascii_case(q.standard_answer.trim());
             let ai_comment = if is_correct {
                 "✅ 回答正确！".to_string()
             } else {
@@ -606,9 +843,20 @@ async fn evaluate_answer(
             let ai_comment = if is_correct {
                 "✅ 回答正确！".to_string()
             } else {
-                let user_str: String = user_set.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ");
-                let std_str: String = std_set.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ");
-                format!("❌ 回答有误。你选择了【{}】，正确答案是【{}】。", user_str, std_str)
+                let user_str: String = user_set
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let std_str: String = std_set
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "❌ 回答有误。你选择了【{}】，正确答案是【{}】。",
+                    user_str, std_str
+                )
             };
 
             Ok(EvaluateResponse {
@@ -657,8 +905,8 @@ async fn import_questions_from_file(
     let content = tokio::fs::read_to_string(&file_path)
         .await
         .map_err(|e| format!("文件读取失败: {}", e))?;
-    let import_list: Vec<ImportQuestion> = serde_json::from_str(&content)
-        .map_err(|e| format!("JSON 格式不正确: {}", e))?;
+    let import_list: Vec<ImportQuestion> =
+        serde_json::from_str(&content).map_err(|e| format!("JSON 格式不正确: {}", e))?;
     let total = import_list.len();
     if total == 0 {
         return Err("文件内无题目".into());
@@ -682,14 +930,22 @@ async fn import_questions_from_file(
         for (i, item) in import_list.into_iter().enumerate() {
             let current_idx = i + 1;
 
-            let _ = app.emit("import-status", ImportProgress {
-                current: current_idx,
-                total,
-                message: format!("正在处理: {:.30}...", item.content),
-                is_finished: false,
-            });
+            let _ = app.emit(
+                "import-status",
+                ImportProgress {
+                    current: current_idx,
+                    total,
+                    message: format!("正在处理: {:.30}...", item.content),
+                    is_finished: false,
+                },
+            );
 
-            let needs_ai = item.standard_answer.as_deref().unwrap_or("").trim().is_empty()
+            let needs_ai = item
+                .standard_answer
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
                 || item.explanation.as_deref().unwrap_or("").trim().is_empty()
                 || item.tags.trim().is_empty();
 
@@ -708,7 +964,11 @@ async fn import_questions_from_file(
                 {
                     Ok((a, e, t)) => {
                         ai_count += 1;
-                        let final_tag = if item.tags.trim().is_empty() { t } else { item.tags.clone() };
+                        let final_tag = if item.tags.trim().is_empty() {
+                            t
+                        } else {
+                            item.tags.clone()
+                        };
                         (a, e, final_tag)
                     }
                     Err(e) => {
@@ -728,16 +988,58 @@ async fn import_questions_from_file(
                 )
             };
 
-            let options_json = item.options.map(|o| serde_json::to_string(&o).unwrap_or_default());
+            let options_json = item
+                .options
+                .map(|o| serde_json::to_string(&o).unwrap_or_default());
+            let base_quality_status = item.quality_status.as_deref().unwrap_or(if needs_ai {
+                "needs_review"
+            } else {
+                "unchecked"
+            });
+            let base_quality_note = item.quality_note.as_deref().unwrap_or("");
+            let existing_id =
+                match db::find_question_id_by_content(&pool_clone, &item.content).await {
+                    Ok(id) => id,
+                    Err(e) => {
+                        eprintln!("⚠️ 第 {} 题重复检测失败: {}", current_idx, e);
+                        None
+                    }
+                };
+            let (content_hash, final_quality_status, final_quality_note, duplicate_of) =
+                match db::prepare_question_dedup_fields(
+                    &pool_clone,
+                    &item.content,
+                    existing_id,
+                    base_quality_status,
+                    base_quality_note,
+                )
+                .await
+                {
+                    Ok(fields) => fields,
+                    Err(e) => {
+                        eprintln!("⚠️ 第 {} 题重复标记失败: {}", current_idx, e);
+                        (
+                            db::question_content_hash(&item.content),
+                            base_quality_status.to_string(),
+                            base_quality_note.to_string(),
+                            None,
+                        )
+                    }
+                };
 
             let res = sqlx::query(
                 "INSERT INTO questions
-                    (question_type, content, options, tags, difficulty, standard_answer, explanation)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (question_type, content, options, tags, difficulty, standard_answer, explanation, source, quality_status, quality_note, content_hash, duplicate_of)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(content) DO UPDATE SET
                     standard_answer = excluded.standard_answer,
                     explanation = excluded.explanation,
-                    tags = excluded.tags",
+                    tags = excluded.tags,
+                    source = excluded.source,
+                    quality_status = excluded.quality_status,
+                    quality_note = excluded.quality_note,
+                    content_hash = excluded.content_hash,
+                    duplicate_of = excluded.duplicate_of",
             )
             .bind(&item.question_type)
             .bind(&item.content)
@@ -746,6 +1048,11 @@ async fn import_questions_from_file(
             .bind(item.difficulty)
             .bind(&ans)
             .bind(&exp)
+            .bind(item.source.as_deref().unwrap_or("导入题库"))
+            .bind(final_quality_status)
+            .bind(final_quality_note)
+            .bind(content_hash)
+            .bind(duplicate_of)
             .execute(&pool_clone)
             .await;
 
@@ -754,12 +1061,15 @@ async fn import_questions_from_file(
             }
         }
 
-        let _ = app.emit("import-status", ImportProgress {
-            current: total,
-            total,
-            message: format!("🎉 导入完成！AI 补全/规范化分类了 {} 道题目。", ai_count),
-            is_finished: true,
-        });
+        let _ = app.emit(
+            "import-status",
+            ImportProgress {
+                current: total,
+                total,
+                message: format!("🎉 导入完成！AI 补全/规范化分类了 {} 道题目。", ai_count),
+                is_finished: true,
+            },
+        );
     });
 
     Ok(ImportResult {
@@ -789,50 +1099,69 @@ async fn generate_questions_by_ai(
 
     tokio::spawn(async move {
         for i in 0..total {
-            let _ = app.emit("ai-generate-progress", GenerateProgress {
-                current: i,
-                total,
-                question: None,
-                message: format!("正在生成第 {}/{} 题...", i + 1, total),
-                is_finished: false,
-                error: None,
-            });
+            let _ = app.emit(
+                "ai-generate-progress",
+                GenerateProgress {
+                    current: i,
+                    total,
+                    question: None,
+                    message: format!("正在生成第 {}/{} 题...", i + 1, total),
+                    is_finished: false,
+                    error: None,
+                },
+            );
 
             match llm_client::generate_single_question(
-                &api_url, &api_key, &model, &topic, &question_type, difficulty,
+                &api_url,
+                &api_key,
+                &model,
+                &topic,
+                &question_type,
+                difficulty,
                 requirement.as_deref(),
-            ).await {
+            )
+            .await
+            {
                 Ok(q) => {
-                    let _ = app.emit("ai-generate-progress", GenerateProgress {
-                        current: i + 1,
-                        total,
-                        question: Some(q),
-                        message: format!("已生成 {}/{} 题", i + 1, total),
-                        is_finished: false,
-                        error: None,
-                    });
+                    let _ = app.emit(
+                        "ai-generate-progress",
+                        GenerateProgress {
+                            current: i + 1,
+                            total,
+                            question: Some(q),
+                            message: format!("已生成 {}/{} 题", i + 1, total),
+                            is_finished: false,
+                            error: None,
+                        },
+                    );
                 }
                 Err(e) => {
-                    let _ = app.emit("ai-generate-progress", GenerateProgress {
-                        current: i + 1,
-                        total,
-                        question: None,
-                        message: format!("第 {} 题生成失败", i + 1),
-                        is_finished: false,
-                        error: Some(e),
-                    });
+                    let _ = app.emit(
+                        "ai-generate-progress",
+                        GenerateProgress {
+                            current: i + 1,
+                            total,
+                            question: None,
+                            message: format!("第 {} 题生成失败", i + 1),
+                            is_finished: false,
+                            error: Some(e),
+                        },
+                    );
                 }
             }
         }
 
-        let _ = app.emit("ai-generate-progress", GenerateProgress {
-            current: total,
-            total,
-            question: None,
-            message: "🎉 生成完成！".to_string(),
-            is_finished: true,
-            error: None,
-        });
+        let _ = app.emit(
+            "ai-generate-progress",
+            GenerateProgress {
+                current: total,
+                total,
+                question: None,
+                message: "🎉 生成完成！".to_string(),
+                is_finished: true,
+                error: None,
+            },
+        );
     });
 
     Ok(())
@@ -845,17 +1174,40 @@ async fn save_ai_generated_questions(
 ) -> Result<usize, String> {
     let mut saved = 0usize;
     for q in &questions {
-        let options_json = q.options.as_ref()
+        let options_json = q
+            .options
+            .as_ref()
             .map(|o| serde_json::to_string(o).unwrap_or_default());
+        let base_quality_status = if q.quality_status.trim().is_empty() {
+            "unchecked"
+        } else {
+            q.quality_status.trim()
+        };
+        let base_quality_note = q.quality_note.trim();
+        let existing_id = db::find_question_id_by_content(&pool, &q.content).await?;
+        let (content_hash, final_quality_status, final_quality_note, duplicate_of) =
+            db::prepare_question_dedup_fields(
+                &pool,
+                &q.content,
+                existing_id,
+                base_quality_status,
+                base_quality_note,
+            )
+            .await?;
 
         let res = sqlx::query(
             "INSERT INTO questions
-                (question_type, content, options, tags, difficulty, standard_answer, explanation)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(content) DO UPDATE SET
-                standard_answer = excluded.standard_answer,
-                explanation = excluded.explanation,
-                tags = excluded.tags",
+                    (question_type, content, options, tags, difficulty, standard_answer, explanation, source, quality_status, quality_note, content_hash, duplicate_of)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(content) DO UPDATE SET
+                    standard_answer = excluded.standard_answer,
+                    explanation = excluded.explanation,
+                    tags = excluded.tags,
+                    source = excluded.source,
+                    quality_status = excluded.quality_status,
+                    quality_note = excluded.quality_note,
+                    content_hash = excluded.content_hash,
+                    duplicate_of = excluded.duplicate_of",
         )
         .bind(&q.question_type)
         .bind(&q.content)
@@ -864,6 +1216,11 @@ async fn save_ai_generated_questions(
         .bind(q.difficulty)
         .bind(&q.standard_answer)
         .bind(&q.explanation)
+        .bind(if q.source.trim().is_empty() { "AI 生成" } else { q.source.trim() })
+        .bind(final_quality_status)
+        .bind(final_quality_note)
+        .bind(content_hash)
+        .bind(duplicate_of)
         .execute(&*pool)
         .await;
 
@@ -902,30 +1259,34 @@ async fn list_questions(
     let search = norm_search(&search);
 
     let mut sql = String::from("SELECT * FROM questions WHERE 1=1");
-    if tag.is_some() { sql.push_str(" AND tags LIKE ?"); }
+    if tag.is_some() {
+        sql.push_str(" AND tags LIKE ?");
+    }
     if search.is_some() {
         sql.push_str(" AND (content LIKE ? OR tags LIKE ? OR standard_answer LIKE ?)");
     }
     sql.push_str(" ORDER BY id DESC LIMIT ? OFFSET ?");
 
     let mut q = sqlx::query_as::<_, Question>(&sql);
-    if let Some(t) = &tag { q = q.bind(format!("%{}%", t)); }
+    if let Some(t) = &tag {
+        q = q.bind(format!("%{}%", t));
+    }
     if let Some(s) = &search {
         let like = format!("%{}%", s);
         q = q.bind(like.clone()).bind(like.clone()).bind(like);
     }
     q = q.bind(limit).bind(offset);
-    q.fetch_all(&*pool).await.map_err(|e| format!("查询题库失败: {}", e))
+    q.fetch_all(&*pool)
+        .await
+        .map_err(|e| format!("查询题库失败: {}", e))
 }
 
 #[tauri::command]
-async fn delete_question(
-    id: i32,
-    pool: tauri::State<'_, SqlitePool>,
-) -> Result<(), String> {
+async fn delete_question(id: i32, pool: tauri::State<'_, SqlitePool>) -> Result<(), String> {
     sqlx::query("DELETE FROM questions WHERE id = ?")
         .bind(id)
-        .execute(&*pool).await
+        .execute(&*pool)
+        .await
         .map_err(|e| format!("删除题目失败: {}", e))?;
     Ok(())
 }
@@ -940,18 +1301,24 @@ async fn count_questions(
     let search = norm_search(&search);
 
     let mut sql = String::from("SELECT COUNT(*) FROM questions WHERE 1=1");
-    if tag.is_some() { sql.push_str(" AND tags LIKE ?"); }
+    if tag.is_some() {
+        sql.push_str(" AND tags LIKE ?");
+    }
     if search.is_some() {
         sql.push_str(" AND (content LIKE ? OR tags LIKE ? OR standard_answer LIKE ?)");
     }
 
     let mut q = sqlx::query_scalar::<_, i64>(&sql);
-    if let Some(t) = &tag { q = q.bind(format!("%{}%", t)); }
+    if let Some(t) = &tag {
+        q = q.bind(format!("%{}%", t));
+    }
     if let Some(s) = &search {
         let like = format!("%{}%", s);
         q = q.bind(like.clone()).bind(like.clone()).bind(like);
     }
-    q.fetch_one(&*pool).await.map_err(|e| format!("统计题目数量失败: {}", e))
+    q.fetch_one(&*pool)
+        .await
+        .map_err(|e| format!("统计题目数量失败: {}", e))
 }
 
 #[tauri::command]
@@ -963,11 +1330,23 @@ async fn create_question(
     difficulty: i32,
     standard_answer: String,
     explanation: String,
+    source: Option<String>,
+    quality_status: Option<String>,
+    quality_note: Option<String>,
     pool: tauri::State<'_, SqlitePool>,
 ) -> Result<i64, String> {
     db::create_question(
-        &pool, &question_type, &content, options.as_deref(),
-        &tags, difficulty, &standard_answer, &explanation,
+        &pool,
+        &question_type,
+        &content,
+        options.as_deref(),
+        &tags,
+        difficulty,
+        &standard_answer,
+        &explanation,
+        source.as_deref().unwrap_or("手动录入"),
+        quality_status.as_deref().unwrap_or("unchecked"),
+        quality_note.as_deref().unwrap_or(""),
     )
     .await
 }
@@ -982,11 +1361,24 @@ async fn update_question(
     difficulty: i32,
     standard_answer: String,
     explanation: String,
+    source: Option<String>,
+    quality_status: Option<String>,
+    quality_note: Option<String>,
     pool: tauri::State<'_, SqlitePool>,
 ) -> Result<(), String> {
     db::update_question(
-        &pool, id, &question_type, &content, options.as_deref(),
-        &tags, difficulty, &standard_answer, &explanation,
+        &pool,
+        id,
+        &question_type,
+        &content,
+        options.as_deref(),
+        &tags,
+        difficulty,
+        &standard_answer,
+        &explanation,
+        source.as_deref().unwrap_or("手动录入"),
+        quality_status.as_deref().unwrap_or("unchecked"),
+        quality_note.as_deref().unwrap_or(""),
     )
     .await
 }
@@ -1014,9 +1406,7 @@ async fn mark_question_wrong(
 }
 
 #[tauri::command]
-async fn get_all_tags(
-    pool: tauri::State<'_, SqlitePool>,
-) -> Result<Vec<String>, String> {
+async fn get_all_tags(pool: tauri::State<'_, SqlitePool>) -> Result<Vec<String>, String> {
     let topics = db::list_topics(&pool)
         .await
         .map_err(|e| format!("读取考点失败: {}", e))?;
@@ -1073,7 +1463,9 @@ async fn get_tag_counts(
 // ── Dashboard 统计命令 ────────────────────────────────────
 
 fn is_record_correct(score: i32, is_correct: Option<i32>, skipped: i32) -> Option<bool> {
-    if skipped != 0 { return Some(false); }
+    if skipped != 0 {
+        return Some(false);
+    }
     if let Some(c) = is_correct {
         return Some(c != 0);
     }
@@ -1081,13 +1473,11 @@ fn is_record_correct(score: i32, is_correct: Option<i32>, skipped: i32) -> Optio
 }
 
 #[tauri::command]
-async fn get_dashboard_stats(
-    pool: tauri::State<'_, SqlitePool>,
-) -> Result<DashboardStats, String> {
+async fn get_dashboard_stats(pool: tauri::State<'_, SqlitePool>) -> Result<DashboardStats, String> {
     // 全部记录（按日期 + 正确性聚合）
     let rows: Vec<(i32, Option<i32>, i32, String)> = sqlx::query_as(
         "SELECT score, is_correct, skipped, substr(created_at, 1, 10) AS day
-         FROM training_records"
+         FROM training_records",
     )
     .fetch_all(&*pool)
     .await
@@ -1099,7 +1489,9 @@ async fn get_dashboard_stats(
     let mut correct_n = 0i64;
     let mut answered_n = 0i64;
     for (score, ic, sk, _) in &rows {
-        if *sk != 0 { continue; }
+        if *sk != 0 {
+            continue;
+        }
         answered_n += 1;
         if is_record_correct(*score, *ic, *sk).unwrap_or(false) {
             correct_n += 1;
@@ -1107,11 +1499,14 @@ async fn get_dashboard_stats(
     }
     let overall_accuracy = if answered_n > 0 {
         correct_n as f64 / answered_n as f64
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     // 今日做题数
     let today: String = sqlx::query_scalar("SELECT date('now', 'localtime')")
-        .fetch_one(&*pool).await
+        .fetch_one(&*pool)
+        .await
         .map_err(|e| format!("查询日期失败: {}", e))?;
     let today_answered = rows.iter().filter(|(_, _, _, d)| *d == today).count() as i64;
 
@@ -1122,30 +1517,36 @@ async fn get_dashboard_stats(
     // 用 SQLite 计算日期偏移
     let mut offset = 0i64;
     loop {
-        let probe: String = sqlx::query_scalar(
-            "SELECT date('now', 'localtime', ? || ' day')"
-        )
-        .bind(format!("-{}", offset))
-        .fetch_one(&*pool).await
-        .map_err(|e| format!("查询日期偏移失败: {}", e))?;
+        let probe: String = sqlx::query_scalar("SELECT date('now', 'localtime', ? || ' day')")
+            .bind(format!("-{}", offset))
+            .fetch_one(&*pool)
+            .await
+            .map_err(|e| format!("查询日期偏移失败: {}", e))?;
         if active_days.contains(probe.as_str()) {
             streak_days += 1;
             offset += 1;
         } else {
             // 今天还没做题不打断连击（仍可保留昨天起的连击）
-            if offset == 0 { offset += 1; continue; }
+            if offset == 0 {
+                offset += 1;
+                continue;
+            }
             break;
         }
-        if offset > 365 { break; }
+        if offset > 365 {
+            break;
+        }
     }
 
     // 本周 / 上周对比（按自然 7 天滚动）
-    let week_ago: String = sqlx::query_scalar(
-        "SELECT date('now', 'localtime', '-7 day')"
-    ).fetch_one(&*pool).await.map_err(|e| e.to_string())?;
-    let two_weeks_ago: String = sqlx::query_scalar(
-        "SELECT date('now', 'localtime', '-14 day')"
-    ).fetch_one(&*pool).await.map_err(|e| e.to_string())?;
+    let week_ago: String = sqlx::query_scalar("SELECT date('now', 'localtime', '-7 day')")
+        .fetch_one(&*pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let two_weeks_ago: String = sqlx::query_scalar("SELECT date('now', 'localtime', '-14 day')")
+        .fetch_one(&*pool)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let mut this_week_total = 0i64;
     let mut this_week_correct = 0i64;
@@ -1175,32 +1576,50 @@ async fn get_dashboard_stats(
         }
     }
     let week_delta_answered = this_week_total - last_week_total;
-    let this_acc = if this_week_answered > 0 { this_week_correct as f64 / this_week_answered as f64 } else { 0.0 };
-    let last_acc = if last_week_answered > 0 { last_week_correct as f64 / last_week_answered as f64 } else { 0.0 };
+    let this_acc = if this_week_answered > 0 {
+        this_week_correct as f64 / this_week_answered as f64
+    } else {
+        0.0
+    };
+    let last_acc = if last_week_answered > 0 {
+        last_week_correct as f64 / last_week_answered as f64
+    } else {
+        0.0
+    };
     let week_delta_accuracy = (this_acc - last_acc) * 100.0;
 
     // 总标签数（去重）
     let tag_rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT tags FROM questions")
-        .fetch_all(&*pool).await.map_err(|e| e.to_string())?;
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut all_tags: HashSet<String> = HashSet::new();
     for (s,) in tag_rows {
         for t in s.split(',') {
             let t = t.trim();
-            if !t.is_empty() { all_tags.insert(t.to_string()); }
+            if !t.is_empty() {
+                all_tags.insert(t.to_string());
+            }
         }
     }
     let total_tags = all_tags.len() as i64;
 
     // 已掌握标签：复用 get_tag_mastery 逻辑
     let mastery = compute_tag_mastery(&pool).await?;
-    let mastered_tags = mastery.iter().filter(|t| t.total >= 5 && t.accuracy >= 0.8).count() as i64;
+    let mastered_tags = mastery
+        .iter()
+        .filter(|t| t.total >= 5 && t.accuracy >= 0.8)
+        .count() as i64;
 
     // 待复习 = 错题本条数
     let pending_review: i64 = sqlx::query_scalar(
         "SELECT COUNT(DISTINCT q.id)
          FROM training_records r JOIN questions q ON q.id = r.question_id
-         WHERE r.score < 60 OR r.is_correct = 0 OR r.manually_added = 1"
-    ).fetch_one(&*pool).await.unwrap_or(0);
+         WHERE r.score < 60 OR r.is_correct = 0 OR r.manually_added = 1",
+    )
+    .fetch_one(&*pool)
+    .await
+    .unwrap_or(0);
 
     Ok(DashboardStats {
         total_answered,
@@ -1225,78 +1644,96 @@ async fn get_accuracy_trend(
         "SELECT substr(created_at, 1, 10) AS day, score, is_correct, skipped
          FROM training_records
          WHERE date(created_at) >= date('now', 'localtime', ? || ' day')
-         ORDER BY day ASC"
+         ORDER BY day ASC",
     )
     .bind(format!("-{}", days - 1))
-    .fetch_all(&*pool).await
+    .fetch_all(&*pool)
+    .await
     .map_err(|e| format!("查询趋势失败: {}", e))?;
 
     use std::collections::BTreeMap;
     let mut by_day: BTreeMap<String, (i64, i64)> = BTreeMap::new(); // (correct, answered)
     for (day, score, ic, sk) in rows {
-        if sk != 0 { continue; }
+        if sk != 0 {
+            continue;
+        }
         let entry = by_day.entry(day).or_insert((0, 0));
         entry.1 += 1;
         if is_record_correct(score, ic, sk).unwrap_or(false) {
             entry.0 += 1;
         }
     }
-    Ok(by_day.into_iter().map(|(date, (c, a))| DayPoint {
-        date,
-        accuracy: if a > 0 { c as f64 / a as f64 } else { 0.0 },
-        count: a,
-    }).collect())
+    Ok(by_day
+        .into_iter()
+        .map(|(date, (c, a))| DayPoint {
+            date,
+            accuracy: if a > 0 { c as f64 / a as f64 } else { 0.0 },
+            count: a,
+        })
+        .collect())
 }
 
 async fn compute_tag_mastery(pool: &SqlitePool) -> Result<Vec<TagStat>, String> {
     let rows: Vec<(String, i32, Option<i32>, i32)> = sqlx::query_as(
         "SELECT q.tags, r.score, r.is_correct, r.skipped
-         FROM training_records r JOIN questions q ON q.id = r.question_id"
-    ).fetch_all(pool).await.map_err(|e| e.to_string())?;
+         FROM training_records r JOIN questions q ON q.id = r.question_id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
     use std::collections::HashMap;
     let mut by_tag: HashMap<String, (i64, i64)> = HashMap::new(); // (correct, total_answered)
     for (tags, score, ic, sk) in rows {
-        if sk != 0 { continue; }
+        if sk != 0 {
+            continue;
+        }
         let correct = is_record_correct(score, ic, sk).unwrap_or(false);
         for t in tags.split(',') {
             let t = t.trim();
-            if t.is_empty() { continue; }
+            if t.is_empty() {
+                continue;
+            }
             let e = by_tag.entry(t.to_string()).or_insert((0, 0));
             e.1 += 1;
-            if correct { e.0 += 1; }
+            if correct {
+                e.0 += 1;
+            }
         }
     }
-    let mut out: Vec<TagStat> = by_tag.into_iter()
+    let mut out: Vec<TagStat> = by_tag
+        .into_iter()
         .map(|(tag, (c, t))| TagStat {
             tag,
             accuracy: if t > 0 { c as f64 / t as f64 } else { 0.0 },
             total: t,
-        }).collect();
-    out.sort_by(|a, b| b.accuracy.partial_cmp(&a.accuracy).unwrap_or(std::cmp::Ordering::Equal));
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.accuracy
+            .partial_cmp(&a.accuracy)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     Ok(out)
 }
 
 #[tauri::command]
-async fn get_tag_mastery(
-    pool: tauri::State<'_, SqlitePool>,
-) -> Result<Vec<TagStat>, String> {
+async fn get_tag_mastery(pool: tauri::State<'_, SqlitePool>) -> Result<Vec<TagStat>, String> {
     compute_tag_mastery(&pool).await
 }
 
 #[tauri::command]
-async fn delete_session(
-    id: i64,
-    pool: tauri::State<'_, SqlitePool>,
-) -> Result<(), String> {
+async fn delete_session(id: i64, pool: tauri::State<'_, SqlitePool>) -> Result<(), String> {
     // 先删 records（FK ON DELETE CASCADE 在未开启 PRAGMA 时不会自动级联）
     sqlx::query("DELETE FROM training_records WHERE session_id = ?")
         .bind(id)
-        .execute(&*pool).await
+        .execute(&*pool)
+        .await
         .map_err(|e| format!("删除训练记录失败: {}", e))?;
     sqlx::query("DELETE FROM training_sessions WHERE id = ?")
         .bind(id)
-        .execute(&*pool).await
+        .execute(&*pool)
+        .await
         .map_err(|e| format!("删除会话失败: {}", e))?;
     Ok(())
 }
@@ -1311,19 +1748,27 @@ async fn get_recent_sessions(
         "SELECT id, created_at, total_count, correct_count, tags
          FROM training_sessions
          ORDER BY id DESC
-         LIMIT ?"
+         LIMIT ?",
     )
     .bind(limit)
-    .fetch_all(&*pool).await
+    .fetch_all(&*pool)
+    .await
     .map_err(|e| format!("查询会话失败: {}", e))?;
 
-    Ok(rows.into_iter().map(|(id, ts, total, correct, tags)| SessionRecord {
-        id,
-        started_at: ts,
-        total: total as i64,
-        correct: correct as i64,
-        tags: tags.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
-    }).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(id, ts, total, correct, tags)| SessionRecord {
+            id,
+            started_at: ts,
+            total: total as i64,
+            correct: correct as i64,
+            tags: tags
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+        })
+        .collect())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1333,19 +1778,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // 加载配置文件（API Key 等）
-            let config_dir = app
-                .path()
-                .app_config_dir()
-                .expect("无法获取应用配置目录");
+            let config_dir = app.path().app_config_dir().expect("无法获取应用配置目录");
             let cfg = AppConfig::load(&config_dir);
             app.manage(Mutex::new(cfg));
             app.manage(ConfigDir(config_dir));
 
             // 解析数据库路径：放在 app_data_dir，避免 dev 监视器把 SQLite WAL 写入误判为源码变更
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("无法获取应用数据目录");
+            let app_data_dir = app.path().app_data_dir().expect("无法获取应用数据目录");
             let _ = std::fs::create_dir_all(&app_data_dir);
             let db_path = app_data_dir.join("forgerust.db");
 
@@ -1366,16 +1805,10 @@ pub fn run() {
 
             println!("数据库位置: {}", db_path.display());
 
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                match db::init_db(db_path).await {
-                    Ok(pool) => {
-                        handle.manage(pool);
-                        println!("数据库连接池挂载成功！");
-                    }
-                    Err(e) => eprintln!("数据库初始化失败: {}", e),
-                }
-            });
+            let pool = tauri::async_runtime::block_on(init_managed_database_pool(db_path))
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            app.manage(pool);
+            println!("数据库连接池挂载成功！");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1496,5 +1929,44 @@ mod phase_tests {
         // fundamental 未满 → 不结束
         let (_p, fin2) = decide_phase("fundamental", 5, 5, 2, 5, false);
         assert!(!fin2);
+    }
+
+    #[test]
+    fn action_plan_uses_chinese_user_facing_text() {
+        let scores = DimensionScores {
+            project_depth: 60,
+            fundamental_solidity: 55,
+            communication: 80,
+        };
+        let (weak_points, recommended_tags, action_items) = build_action_plan(&scores, &[]);
+        let joined = format!(
+            "{} {} {}",
+            weak_points.join(" "),
+            recommended_tags.join(" "),
+            action_items.join(" ")
+        );
+
+        assert!(weak_points.contains(&"项目深度和技术取舍说明不足".to_string()));
+        assert!(recommended_tags.contains(&"数据库".to_string()));
+        assert!(action_items.iter().any(|item| item.contains("项目经历")));
+        assert!(!joined.chars().any(|ch| ch.is_ascii_alphabetic()));
+    }
+    #[tokio::test]
+    async fn init_managed_database_pool_returns_ready_pool() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("forgerust-managed-pool-{nonce}.db"));
+
+        let pool = init_managed_database_pool(db_path.clone()).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM questions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert!(count > 0);
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
     }
 }

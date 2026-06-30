@@ -66,7 +66,10 @@ pub async fn call_api_stream<F: FnMut(&str)>(
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
-        return Err(format!("API 请求失败，状态码: {}，详情: {}", status, error_text));
+        return Err(format!(
+            "API 请求失败，状态码: {}，详情: {}",
+            status, error_text
+        ));
     }
 
     let mut stream = response.bytes_stream();
@@ -158,7 +161,10 @@ async fn call_api(
     } else {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
-        Err(format!("API 请求失败，状态码: {}，详情: {}", status, error_text))
+        Err(format!(
+            "API 请求失败，状态码: {}，详情: {}",
+            status, error_text
+        ))
     }
 }
 
@@ -189,7 +195,16 @@ pub async fn generate_answer_and_explanation_with_tags(
         options.unwrap_or("")
     );
 
-    let raw = call_api(api_url, api_key, model, &system_prompt, &user_prompt, 0.3, 1024).await?;
+    let raw = call_api(
+        api_url,
+        api_key,
+        model,
+        &system_prompt,
+        &user_prompt,
+        0.3,
+        1024,
+    )
+    .await?;
     let parsed: Value = serde_json::from_str(clean_json(&raw))
         .map_err(|e| format!("JSON 解析失败: {}，原始内容: {}", e, raw))?;
 
@@ -210,7 +225,15 @@ pub async fn generate_answer_and_explanation(
     content: &str,
     options: Option<&str>,
 ) -> Result<(String, String, String), String> {
-    let allowed_tags = vec!["Java", "Rust", "操作系统", "计算机网络", "数据库", "数据结构", "其他"];
+    let allowed_tags = vec![
+        "Java",
+        "Rust",
+        "操作系统",
+        "计算机网络",
+        "数据库",
+        "数据结构",
+        "其他",
+    ];
     let tags_context = allowed_tags.join(", ");
 
     let system_prompt = format!(
@@ -228,7 +251,16 @@ pub async fn generate_answer_and_explanation(
         options.unwrap_or("")
     );
 
-    let raw = call_api(api_url, api_key, model, &system_prompt, &user_prompt, 0.3, 1024).await?;
+    let raw = call_api(
+        api_url,
+        api_key,
+        model,
+        &system_prompt,
+        &user_prompt,
+        0.3,
+        1024,
+    )
+    .await?;
 
     let parsed: Value = serde_json::from_str(clean_json(&raw))
         .map_err(|e| format!("JSON 解析失败: {}，原始内容: {}", e, raw))?;
@@ -260,7 +292,16 @@ pub async fn evaluate_essay_answer(
         content, standard_answer, user_answer
     );
 
-    let raw = call_api(api_url, api_key, model, system_prompt, &user_prompt, 0.3, 1024).await?;
+    let raw = call_api(
+        api_url,
+        api_key,
+        model,
+        system_prompt,
+        &user_prompt,
+        0.3,
+        1024,
+    )
+    .await?;
 
     let parsed: Value = serde_json::from_str(clean_json(&raw))
         .map_err(|e| format!("AI 返回内容不是合法 JSON: {}，原始内容: {}", e, raw))?;
@@ -302,9 +343,7 @@ pub async fn generate_single_question(
         ),
     };
 
-    let req = requirement
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty());
+    let req = requirement.map(|s| s.trim()).filter(|s| !s.is_empty());
 
     let requirement_block_system = match req {
         Some(r) => format!(
@@ -337,7 +376,16 @@ pub async fn generate_single_question(
         req_user = requirement_block_user,
     );
 
-    let raw = call_api(api_url, api_key, model, &system_prompt, &user_prompt, 0.75, 2048).await?;
+    let raw = call_api(
+        api_url,
+        api_key,
+        model,
+        &system_prompt,
+        &user_prompt,
+        0.75,
+        2048,
+    )
+    .await?;
     let parsed: Value = serde_json::from_str(clean_json(&raw))
         .map_err(|e| format!("AI 返回格式异常: {}，原始: {}", e, raw))?;
 
@@ -363,6 +411,9 @@ pub async fn generate_single_question(
         explanation,
         tags: topic.to_string(),
         difficulty,
+        source: "AI 生成".to_string(),
+        quality_status: "unchecked".to_string(),
+        quality_note: String::new(),
     })
 }
 
@@ -394,12 +445,24 @@ pub async fn evaluate_interview(
         "只返回 JSON：",
         r#"{"project_depth":85,"fundamental_solidity":70,"communication":80,"summary":"..."}"#
     );
-    let raw = call_api(api_url, api_key, model, system_prompt, transcript, 0.3, 1024).await?;
+    let raw = call_api(
+        api_url,
+        api_key,
+        model,
+        system_prompt,
+        transcript,
+        0.3,
+        1024,
+    )
+    .await?;
     let v: Value = serde_json::from_str(clean_json(&raw))
         .map_err(|e| format!("评分 JSON 解析失败: {}，原始内容: {}", e, raw))?;
     let scores = crate::models::DimensionScores {
         project_depth: v["project_depth"].as_i64().unwrap_or(0).clamp(0, 100) as i32,
-        fundamental_solidity: v["fundamental_solidity"].as_i64().unwrap_or(0).clamp(0, 100) as i32,
+        fundamental_solidity: v["fundamental_solidity"]
+            .as_i64()
+            .unwrap_or(0)
+            .clamp(0, 100) as i32,
         communication: v["communication"].as_i64().unwrap_or(0).clamp(0, 100) as i32,
     };
     let summary = v["summary"].as_str().unwrap_or("").trim().to_string();

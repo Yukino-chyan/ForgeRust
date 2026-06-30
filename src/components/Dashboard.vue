@@ -1,7 +1,8 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, onMounted, watch, computed, shallowRef, onBeforeUnmount, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import Icon from "./ui/Icon.vue";
+import { useToast } from "../composables/useToast";
 
 import * as echarts from "echarts/core";
 import { LineChart, BarChart } from "echarts/charts";
@@ -39,6 +40,7 @@ const trend = ref<DayPoint[]>([]);
 const mastery = ref<TagStat[]>([]);
 const sessions = ref<SessionRecord[]>([]);
 const loading = ref(true);
+const toast = useToast();
 
 const trendEl = ref<HTMLDivElement | null>(null);
 const masteryEl = ref<HTMLDivElement | null>(null);
@@ -290,7 +292,7 @@ async function confirmDelete() {
       renderMastery();
     }
   } catch (e) {
-    alert(`删除失败：${e}`);
+    toast.error("删除失败", String(e));
   } finally {
     deleting.value = false;
   }
@@ -755,3 +757,4 @@ async function confirmDelete() {
 .modal-enter-active, .modal-leave-active { transition: opacity var(--dur-base) var(--ease); }
 .modal-enter-from, .modal-leave-to { opacity: 0; }
 </style>
+

@@ -1,7 +1,8 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, computed, inject, onMounted, onUnmounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import Icon from "./ui/Icon.vue";
+import { useToast } from "../composables/useToast";
 
 interface AiResponse {
   standard_answer: string;
@@ -56,6 +57,7 @@ const tags = ref<string[]>([]);
 const tagCounts = ref<Record<string, number>>({});
 const injectedApiKey = inject<ReturnType<typeof ref<string>>>("apiKey");
 const hasApiKey = computed(() => !!injectedApiKey?.value?.trim());
+const toast = useToast();
 
 watch(appState, (s) => emit("stateChange", s), { immediate: true });
 
@@ -96,7 +98,7 @@ watch(
       emit("consumed");
     } catch (e) {
       appState.value = "setup";
-      alert(e);
+      toast.error("加载错题失败", String(e));
     } finally {
       isPreloading.value = false;
     }
@@ -247,7 +249,10 @@ function toggleTag(tag: string) {
 }
 
 async function startInterview() {
-  if (selectedTags.value.length === 0) return alert("请至少选择一个考点。");
+  if (selectedTags.value.length === 0) {
+    toast.warning("请选择考点", "请至少选择一个考点。");
+    return;
+  }
   try {
     questionList.value = await invoke("generate_interview", {
       tags: selectedTags.value,
@@ -263,7 +268,7 @@ async function startInterview() {
     appState.value = "interview";
     startTimer();
   } catch (error) {
-    alert(error);
+    toast.error("组卷失败", String(error));
   }
 }
 
@@ -271,7 +276,10 @@ async function startEvaluation() {
   if (currentQuestion.value?.question_type === "MULTI") {
     userAnswer.value = [...multiAnswers.value].sort().join(",");
   }
-  if (!userAnswer.value) return alert("请先给出你的答案。");
+  if (!userAnswer.value) {
+    toast.warning("请先作答", "填写答案后再提交。");
+    return;
+  }
 
   if (!useAI.value && currentQuestion.value?.question_type === "ESSAY") {
     const q = currentQuestion.value;
@@ -310,7 +318,7 @@ async function startEvaluation() {
       manuallyAdded: false,
     });
   } catch (error) {
-    alert(`系统内部调用报错: ${error}`);
+    toast.error("系统调用失败", String(error));
   } finally {
     isLoading.value = false;
   }
@@ -1404,3 +1412,4 @@ function formatTime(sec: number) {
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
+

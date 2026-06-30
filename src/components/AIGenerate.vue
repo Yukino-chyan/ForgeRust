@@ -1,8 +1,9 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, inject, computed, onMounted, onBeforeUnmount } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Icon from "./ui/Icon.vue";
+import { useToast } from "../composables/useToast";
 
 interface GeneratedQuestion {
   question_type: string;
@@ -39,6 +40,7 @@ interface Topic {
 const props = defineProps<{ isActive?: boolean }>();
 
 const apiKey = inject<any>("apiKey");
+const toast = useToast();
 
 const TOPICS = ["Java", "Rust", "操作系统", "计算机网络", "数据库", "数据结构", "其他"];
 const TYPES = [
@@ -120,7 +122,7 @@ function toggleAll() {
 
 async function startGenerate() {
   if (!apiKey?.value) {
-    alert("请先到「设置」中填写 API Key。");
+    toast.warning("请先配置 API Key", "在设置页填写后再生成题目。");
     return;
   }
   isGenerating.value = true;
@@ -170,7 +172,7 @@ async function startGenerate() {
       requirement: requirement.value.trim() || null,
     });
   } catch (e) {
-    alert(`生成失败: ${e}`);
+    toast.error("生成失败", String(e));
     isGenerating.value = false;
     unlisten();
   }
@@ -179,7 +181,7 @@ async function startGenerate() {
 async function saveSelected() {
   const toSave = questions.value.filter((q) => q.selected && !q.failed);
   if (toSave.length === 0) {
-    alert("请至少选择一道有效题目");
+    toast.warning("请选择题目", "请至少选择一道有效题目。");
     return;
   }
   saveStatus.value = "saving";
@@ -187,8 +189,9 @@ async function saveSelected() {
     const saved: number = await invoke("save_ai_generated_questions", { questions: toSave });
     saveCount.value = saved;
     saveStatus.value = "done";
+    toast.success("保存成功", `已保存 ${saved} 道题。`);
   } catch (e) {
-    alert(`保存失败: ${e}`);
+    toast.error("保存失败", String(e));
     saveStatus.value = "idle";
   }
 }
@@ -757,3 +760,4 @@ function difficultyStar(n: number) {
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
+

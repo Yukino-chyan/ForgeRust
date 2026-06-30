@@ -5,6 +5,7 @@ import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import Icon from "./ui/Icon.vue";
 import QuestionModal from "./ui/QuestionModal.vue";
 import { useImportProgress } from "../composables/useImportProgress";
+import { useToast } from "../composables/useToast";
 
 interface Question {
   id: number;
@@ -15,6 +16,11 @@ interface Question {
   difficulty: number;
   standard_answer: string;
   explanation: string;
+  source: string;
+  quality_status: string;
+  quality_note: string;
+  content_hash?: string;
+  duplicate_of?: number | null;
 }
 
 const questions = ref<Question[]>([]);
@@ -33,6 +39,7 @@ const creatingTopic = ref(false);
 const topicMessage = ref("");
 
 const { startImport } = useImportProgress();
+const toast = useToast();
 
 const modalMode = ref<"create" | "edit" | "view" | null>(null);
 const modalQuestion = ref<Question | null>(null);
@@ -51,18 +58,18 @@ async function handleExport() {
   if (!path) return;
   try {
     const n = await invoke<number>("export_questions", { path });
-    alert(`已导出 ${n} 道题到\n${path}`);
+    toast.success("导出完成", `已导出 ${n} 道题到 ${path}`);
   } catch (e) {
-    alert(e);
+    toast.error("操作失败", String(e));
   }
 }
 
 async function handleMarkWrong(q: Question) {
   try {
     await invoke("mark_question_wrong", { questionId: q.id });
-    alert("已加入错题本");
+    toast.success("已加入错题本");
   } catch (e) {
-    alert(e);
+    toast.error("操作失败", String(e));
   }
 }
 
@@ -90,6 +97,7 @@ async function refresh() {
     grandTotal.value = gc;
   } catch (e) {
     console.error(e);
+    toast.error("题库加载失败", String(e));
   } finally {
     loading.value = false;
   }
@@ -160,7 +168,7 @@ async function handleImport() {
   try {
     await startImport(path);
   } catch (e) {
-    alert(e);
+    toast.error("操作失败", String(e));
   }
 }
 
@@ -170,7 +178,7 @@ async function handleDelete(q: Question) {
     await invoke("delete_question", { id: q.id });
     await refresh();
   } catch (e) {
-    alert(e);
+    toast.error("操作失败", String(e));
   }
 }
 
@@ -185,6 +193,22 @@ function typeLabel(t: string): string {
 function difficultyLabel(d: number): string {
   return "★".repeat(Math.max(1, Math.min(5, d)));
 }
+
+function qualityLabel(status: string): string {
+  switch (status) {
+    case "reviewed": return "已审核";
+    case "needs_review": return "需复核";
+    case "outdated": return "可能过时";
+    default: return "待审核";
+  }
+}
+function qualityClass(status: string): string {
+  if (status === "reviewed") return "ok";
+  if (status === "needs_review") return "warn";
+  if (status === "outdated") return "danger";
+  return "muted";
+}
+
 </script>
 
 <template>
@@ -270,6 +294,13 @@ function difficultyLabel(d: number): string {
         <div class="q-meta">
           <span class="fr-chip">{{ typeLabel(q.question_type) }}</span>
           <span class="diff fr-mono" :title="`难度 ${q.difficulty}`">{{ difficultyLabel(q.difficulty) }}</span>
+          <span :class="['quality-badge', qualityClass(q.quality_status)]" :title="q.quality_note || q.source || '暂无备注'">
+            {{ qualityLabel(q.quality_status) }}
+          </span>
+          <span v-if="q.source" class="source-text">{{ q.source }}</span>
+          <span v-if="q.duplicate_of" class="duplicate-badge" :title="q.quality_note || `与题目 #${q.duplicate_of} 疑似重复`">
+            疑似重复 #{{ q.duplicate_of }}
+          </span>
           <span class="q-tags">
             <span v-for="t in q.tags.split(',').map(s => s.trim()).filter(Boolean).slice(0, 3)" :key="t" class="fr-chip fr-chip-accent">{{ t }}</span>
           </span>
@@ -469,6 +500,22 @@ function difficultyLabel(d: number): string {
   font-size: var(--fs-12);
   letter-spacing: 0.5px;
 }
+.quality-badge { width: fit-content; padding: 2px 7px; border-radius: 999px; font-size: 11px; line-height: 1.4; }
+.quality-badge.ok { color: var(--success); background: var(--success-soft); }
+.quality-badge.warn { color: var(--warning); background: var(--warning-soft); }
+.quality-badge.danger { color: var(--danger); background: var(--danger-soft); }
+.quality-badge.muted { color: var(--text-subtle); background: var(--surface-2); }
+.duplicate-badge {
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.source-text { max-width: 120px; color: var(--text-subtle); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .q-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 
 .q-content {
@@ -512,3 +559,4 @@ function difficultyLabel(d: number): string {
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
+

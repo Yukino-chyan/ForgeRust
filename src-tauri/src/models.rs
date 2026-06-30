@@ -1,18 +1,23 @@
-use serde::{Deserialize, Serialize};  
-use sqlx::FromRow;  
-  
-// 1. 数据库题目模型 
-#[derive(Debug, Serialize, Deserialize, FromRow, Clone)]  
-pub struct Question {  
-    pub id: i32,  
-    pub question_type: String,  
-    pub content: String,  
-    pub options: Option<String>,  
-    pub tags: String,  
-    pub difficulty: i32,  
-    pub standard_answer: String,  
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
+
+// 1. 数据库题目模型
+#[derive(Debug, Serialize, Deserialize, FromRow, Clone)]
+pub struct Question {
+    pub id: i32,
+    pub question_type: String,
+    pub content: String,
+    pub options: Option<String>,
+    pub tags: String,
+    pub difficulty: i32,
+    pub standard_answer: String,
     pub explanation: String,
-}  
+    pub source: String,
+    pub quality_status: String,
+    pub quality_note: String,
+    pub content_hash: String,
+    pub duplicate_of: Option<i32>,
+}
 
 #[derive(Debug, Serialize, Deserialize, FromRow, Clone)]
 pub struct Topic {
@@ -21,31 +26,37 @@ pub struct Topic {
     pub description: String,
     pub created_at: String,
 }
-  
+
 // 2. 导入文件中单道题的格式
-#[derive(Debug, Deserialize)]  
-pub struct ImportQuestion {  
-    pub question_type: String,  
-    pub content: String,  
+#[derive(Debug, Deserialize)]
+pub struct ImportQuestion {
+    pub question_type: String,
+    pub content: String,
     pub options: Option<Vec<String>>,
-    pub tags: String,  
-    pub difficulty: i32,  
-    #[serde(default)]  
-    pub standard_answer: Option<String>,  
-    #[serde(default)]  
-    pub explanation: Option<String>,  
-}  
-  
-// 3. 答题评分返回结构  
-#[derive(Debug, Serialize, Deserialize)]  
-pub struct EvaluateResponse {  
-    pub standard_answer: String, // 从 DB 直接取，始终有值  
-    pub explanation: String,     // 题目解析，从 DB 直接取  
-    pub is_correct: Option<bool>,// 选择题专用：是否答对；简答题为 None  
-    pub ai_comment: String,      // AI 针对用户作答的实时点评  
-    pub score: i32,              // 0-100  
-}  
-  
+    pub tags: String,
+    pub difficulty: i32,
+    #[serde(default)]
+    pub standard_answer: Option<String>,
+    #[serde(default)]
+    pub explanation: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub quality_status: Option<String>,
+    #[serde(default)]
+    pub quality_note: Option<String>,
+}
+
+// 3. 答题评分返回结构
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EvaluateResponse {
+    pub standard_answer: String,  // 从 DB 直接取，始终有值
+    pub explanation: String,      // 题目解析，从 DB 直接取
+    pub is_correct: Option<bool>, // 选择题专用：是否答对；简答题为 None
+    pub ai_comment: String,       // AI 针对用户作答的实时点评
+    pub score: i32,               // 0-100
+}
+
 // 4. 保存训练记录（前端传入）
 #[derive(Debug, Deserialize)]
 pub struct SaveRecordInput {
@@ -100,6 +111,12 @@ pub struct GeneratedQuestion {
     pub explanation: String,
     pub tags: String,
     pub difficulty: i32,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub quality_status: String,
+    #[serde(default)]
+    pub quality_note: String,
 }
 
 // 8. AI 出题 - 生成进度事件
@@ -117,21 +134,21 @@ pub struct GenerateProgress {
 #[derive(Debug, Serialize)]
 pub struct DashboardStats {
     pub total_answered: i64,
-    pub overall_accuracy: f64,        // 0.0 - 1.0
+    pub overall_accuracy: f64, // 0.0 - 1.0
     pub mastered_tags: i64,
     pub total_tags: i64,
     pub pending_review: i64,
     pub streak_days: i64,
     pub today_answered: i64,
-    pub week_delta_answered: i64,     // 本周 - 上周
-    pub week_delta_accuracy: f64,     // 百分点
+    pub week_delta_answered: i64, // 本周 - 上周
+    pub week_delta_accuracy: f64, // 百分点
 }
 
 // 10. 日趋势点
 #[derive(Debug, Serialize)]
 pub struct DayPoint {
-    pub date: String,        // YYYY-MM-DD
-    pub accuracy: f64,       // 0.0 - 1.0
+    pub date: String,  // YYYY-MM-DD
+    pub accuracy: f64, // 0.0 - 1.0
     pub count: i64,
 }
 
@@ -200,6 +217,15 @@ pub struct InterviewTurn {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InterviewSettings {
+    pub target_role: String,
+    pub direction: String,
+    pub interview_difficulty: String,
+    pub follow_up_intensity: String,
+    pub practice_mode: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DimensionScores {
     #[serde(default)]
     pub project_depth: i32,
@@ -215,6 +241,9 @@ pub struct InterviewReport2 {
     pub average_score: f64,
     pub dimension_scores: DimensionScores,
     pub summary: String,
+    pub weak_points: Vec<String>,
+    pub recommended_tags: Vec<String>,
+    pub action_items: Vec<String>,
     pub messages: Vec<InterviewMessage>,
 }
 
@@ -226,4 +255,6 @@ pub struct InterviewSummary {
     pub tags: String,
     pub average_score: f64,
     pub dimension_scores: DimensionScores,
+    pub target_role: String,
+    pub direction: String,
 }

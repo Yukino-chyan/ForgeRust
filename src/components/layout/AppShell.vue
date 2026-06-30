@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, onMounted, provide, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import Sidebar from "./Sidebar.vue";
@@ -13,6 +13,7 @@ import Settings from "../Settings.vue";
 import MockInterview from "../MockInterview.vue";
 import InterviewHistory from "../InterviewHistory.vue";
 import Icon from "../ui/Icon.vue";
+import ToastHost from "../ui/ToastHost.vue";
 
 import { useImportProgress } from "../../composables/useImportProgress";
 
@@ -170,6 +171,8 @@ const importPercent = computed(() => {
         <p class="toast-msg">{{ importState.message }}</p>
       </div>
     </Transition>
+
+    <ToastHost />
   </div>
 </template>
 
@@ -321,3 +324,5 @@ const importPercent = computed(() => {
   to { transform: rotate(360deg); }
 }
 </style>
+
+

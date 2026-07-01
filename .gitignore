@@ -37,3 +37,6 @@ target/
 src-tauri/target/
 .cargo-target/
 .cargo/config.toml
+
+# Local packaged installers / release copies
+release-package/
